@@ -1,6 +1,6 @@
 mod inner;
 
-use std::{error::Error, fmt::{self, Debug, Display, Formatter}, marker::PhantomData, ops::{Bound, Deref, Range, RangeFrom, RangeFull, RangeInclusive, RangeTo, RangeToInclusive}, ptr::{without_provenance_mut, NonNull}, slice, str::Utf8Error, usize};
+use std::{borrow::Borrow, cmp::Ordering, error::Error, fmt::{self, Debug, Display, Formatter, Pointer}, hash::{Hash, Hasher}, marker::PhantomData, ops::{Bound, Deref, Range, RangeFrom, RangeFull, RangeInclusive, RangeTo, RangeToInclusive}, ptr::{without_provenance_mut, NonNull}, slice, str::Utf8Error, usize};
 
 use inner::*;
 
@@ -373,6 +373,96 @@ impl<T: SrcTarget + ?Sized> Deref for Src<T> {
   #[inline]
   fn deref(&self) -> &Self::Target {
     T::get(self)
+  }
+  
+}
+
+impl<T: SrcTarget + ?Sized> Borrow<T> for Src<T> {
+  
+  #[inline]
+  fn borrow(&self) -> &T {
+    &**self
+  }
+  
+}
+
+impl<T: SrcTarget + ?Sized> AsRef<T> for Src<T> {
+  
+  #[inline]
+  fn as_ref(&self) -> &T {
+    &**self
+  }
+  
+}
+
+impl<T: Hash + SrcTarget + ?Sized> Hash for Src<T> {
+  
+  #[inline]
+  fn hash<H: Hasher>(&self, state: &mut H) {
+    T::hash(&**self, state);
+  }
+  
+}
+
+impl<T: PartialEq<U> + SrcTarget + ?Sized, U: SrcTarget + ?Sized> PartialEq<Src<U>> for Src<T> {
+  
+  #[inline]
+  fn eq(&self, other: &Src<U>) -> bool {
+    T::eq(&**self, &**other)
+  }
+  
+  #[inline]
+  fn ne(&self, other: &Src<U>) -> bool {
+    T::ne(&**self, &**other)
+  }
+  
+}
+
+impl<T: Eq + SrcTarget + ?Sized> Eq for Src<T> {}
+
+impl<T: PartialOrd<U> + SrcTarget + ?Sized, U: SrcTarget + ?Sized> PartialOrd<Src<U>> for Src<T> {
+  
+  #[inline]
+  fn ge(&self, other: &Src<U>) -> bool {
+    T::ge(&**self, &**other)
+  }
+  
+  #[inline]
+  fn gt(&self, other: &Src<U>) -> bool {
+    T::gt(&**self, &**other)
+  }
+  
+  #[inline]
+  fn le(&self, other: &Src<U>) -> bool {
+    T::le(&**self, &**other)
+  }
+  
+  #[inline]
+  fn lt(&self, other: &Src<U>) -> bool {
+    T::lt(&**self, &**other)
+  }
+  
+  #[inline]
+  fn partial_cmp(&self, other: &Src<U>) -> Option<Ordering> {
+    T::partial_cmp(&**self, &**other)
+  }
+  
+}
+
+impl<T: Ord + SrcTarget + ?Sized> Ord for Src<T> {
+  
+  #[inline]
+  fn cmp(&self, other: &Self) -> Ordering {
+    T::cmp(&**self, &**other)
+  }
+  
+}
+
+impl<T: SrcTarget + ?Sized> Pointer for Src<T> {
+  
+  #[inline]
+  fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+    Pointer::fmt(&self.start, f)
   }
   
 }
