@@ -718,13 +718,13 @@ impl<T> UninitSrc<T> {
 
 impl<T> UninitSrc<[T]> {
   
-  // TODO: if f panics after the first call, then there will be initialized elements that will be "forgotten" in the panic; the unstable std::array::from_fn() uses a guard to drop any already-initialized values, which this should probably do the same
   pub fn init_from_fn<F: FnMut(usize) -> T>(self, mut f: F) -> Src<[T]> {
     let header = self.header();
     // SAFETY:
     // * all constructor fns for UninitSrc<T> initialize self.header from InnerHeader::new_inner::<T>
     // * the header is only accessed from InnerHeader::get_header
     let start = unsafe { InnerHeader::get_body_ptr::<T>(self.header) };
+    let mut guard = PartialInitGuard::<T> { header: self.header, initialized: 0, _phantom: PhantomData };
     for i in 0..header.len() {
       // SAFETY:
       // * all constructor fns for UninitSrc<T> initialize self.header from InnerHeader::new_inner::<T>
@@ -733,7 +733,9 @@ impl<T> UninitSrc<[T]> {
       let val = f(i);
       // SAFETY: no one else has seen the body of the allocation (because the weaks only look at the header after the strong count has been initialized), so this write is okay
       unsafe { ptr.write(val) };
+      guard.initialized += 1;
     }
+    forget(guard);
     header.inc_strong_count();
     let this = Src {
       header: self.header,
@@ -796,6 +798,27 @@ impl<T: SrcTarget + ?Sized> Drop for UninitSrc<T> {
     // * the header is only accessed from InnerHeader::get_header
     // NOTE: the UninitSrc logically holds one weak reference
     unsafe { InnerHeader::drop_weak::<T::Item>(self.header); }
+  }
+  
+}
+
+struct PartialInitGuard<T> {
+  
+  header: NonNull<InnerHeader>,
+  initialized: usize,
+  _phantom: PhantomData<*const T>,
+  
+}
+
+impl<T> Drop for PartialInitGuard<T> {
+  
+  fn drop(&mut self) {
+    // SAFETY:
+    // * by the contract of this type, self.header is from an initialization fn from UninitSrc; all constructor fns for UninitSrc<T> initialize self.header from InnerHeader::new_inner::<T>
+    // * by the contract of this type, the first self.initialized elements have been initialized
+    // * the header is only accessed from InnerHeader::get_header
+    // * by the contract of this type, self.header is from an initialization fn from UninitSrc that is panicking; therefore, no one else has seen or will see the body
+    unsafe { InnerHeader::drop_body_up_to::<T>(self.header, self.initialized); }
   }
   
 }

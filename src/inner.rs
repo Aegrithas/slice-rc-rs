@@ -54,8 +54,10 @@ impl InnerHeader {
   // guarantees:
   // * get_body_ptr(_).add(i) points to a valid (aligned, etc.) element in the allocated object iff i < header.len; usage of each element must guarantee the initialization and read/write requirement of NonNull
   pub unsafe fn get_body_ptr<T>(ptr: NonNull<InnerHeader>) -> NonNull<T> {
+    // SAFETY: safety requirements are passed on to the caller
     let header = unsafe { InnerHeader::get_header(ptr) };
     let body_offset = header.body_offset;
+    // SAFETY: safety requirements are passed on to the caller
     unsafe { ptr.byte_add(body_offset).cast::<T>() }
   }
   
@@ -70,7 +72,19 @@ impl InnerHeader {
   pub unsafe fn drop_body<T>(ptr: NonNull<InnerHeader>) {
     // SAFETY: safety requirements are passed on to the caller
     let header = unsafe { InnerHeader::get_header(ptr) };
-    let len = header.len;
+    // SAFETY: safety requirements are passed on to the caller
+    unsafe { InnerHeader::drop_body_up_to::<T>(ptr, header.len); }
+  }
+  
+  // SAFETY:
+  // requires:
+  // * ptr must be from InnerHeader::new_inner::<T>(_)
+  // * the first len elements must be initialized
+  // * no one else may have mutable access to the header; this is true if all accesses (after construction) are through InnerHeader::get_header
+  // * no one else may have any access to any of the first len elements of the body
+  // guarantees
+  // * first len elements are deinitialized after this call; those elements are not valid and should not be read
+  pub unsafe fn drop_body_up_to<T>(ptr: NonNull<InnerHeader>, len: usize) {
     // SAFETY: safety requirements are passed on to the caller
     let ptr = unsafe { InnerHeader::get_body_ptr::<T>(ptr) };
     for i in 0..len {
