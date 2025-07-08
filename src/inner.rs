@@ -22,17 +22,17 @@ impl InnerHeader {
   
   // SAFETY:
   // various static methods on InnerHeader offer access to the contents; nothing else is guaranteed to be sound
-  pub fn new_inner<T>(len: usize) -> Result<NonNull<InnerHeader>, AllocError> {
+  pub fn new_inner<T>(len: usize, init_strong_count: usize) -> Result<NonNull<InnerHeader>, AllocError> {
     let (layout, body_offset) = Self::inner_layout::<T>(len).map_err(|_| AllocError::TooLarge)?;
     // SAFETY: layout is guaranteed to be non-zero because it contains an `InnerHeader`
     let ptr = unsafe { alloc(layout) }.cast();
     let Some(ptr) = NonNull::new(ptr) else {
       return Err(AllocError::OutOfMemory)
     };
-    let strong = Cell::new(1);
+    let strong_count = Cell::new(init_strong_count);
     // all strong references logically hold one collective weak reference
-    let weak = Cell::new(1);
-    let header = Self { layout, body_offset, len, strong_count: strong, weak_count: weak };
+    let weak_count = Cell::new(1);
+    let header = Self { layout, body_offset, len, strong_count, weak_count };
     // SAFETY: this ptr just came from std::alloc::alloc; therefore, it is both aligned and valid for reads and writes
     unsafe { ptr.write(header); }
     Ok(ptr)
@@ -180,13 +180,13 @@ impl InnerHeader {
     weak_count.set(weak_count.get().wrapping_add(1));
   }
   
-  pub fn dec_strong_count(&self) {
+  fn dec_strong_count(&self) {
     let strong_count = &self.strong_count;
     debug_assert!(strong_count.get() > 0, "tried remove a non-existant strong_count");
     strong_count.set(strong_count.get().wrapping_add(1));
   }
   
-  pub fn dec_weak_count(&self) {
+  fn dec_weak_count(&self) {
     let weak_count = &self.weak_count;
     debug_assert!(weak_count.get() > 0, "tried remove a non-existant strong_count");
     weak_count.set(weak_count.get().wrapping_add(1));

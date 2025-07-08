@@ -15,6 +15,13 @@ pub struct Src<T: SrcTarget + ?Sized> {
 
 impl<T: SrcTarget + ?Sized> Src<T> {
   
+  fn header(&self) -> &InnerHeader {
+    // SAFETY:
+    // * all constructor fns for Src initialize header from InnerHeader::new_inner::<T::Item>
+    // * the header is only accessed from InnerHeader::get_header
+    unsafe { InnerHeader::get_header(self.header) }
+  }
+  
   #[inline]
   pub fn ptr_eq(this: &Src<T>, other: &Src<T>) -> bool {
     this.start == other.start
@@ -35,11 +42,7 @@ impl<T: SrcTarget + ?Sized> Src<T> {
   }
   
   pub fn downgrade(this: &Src<T>) -> WeakSrc<T> {
-    // SAFETY:
-    // * all constructor fns for Src initialize header from InnerHeader::new_inner::<T::Item>
-    // * the header is only accessed from InnerHeader::get_header
-    let header = unsafe { InnerHeader::get_header(this.header) };
-    header.inc_weak_count();
+    this.header().inc_weak_count();
     WeakSrc {
       header: this.header,
       start: this.start,
@@ -49,19 +52,11 @@ impl<T: SrcTarget + ?Sized> Src<T> {
   }
   
   pub fn strong_count(this: &Src<T>) -> usize {
-    // SAFETY:
-    // * all constructor fns for Src initialize header from InnerHeader::new_inner::<T::Item>
-    // * the header is only accessed from InnerHeader::get_header
-    let header = unsafe { InnerHeader::get_header(this.header) };
-    header.strong_count()
+    this.header().strong_count()
   }
   
   pub fn weak_count(this: &Src<T>) -> usize {
-    // SAFETY:
-    // * all constructor fns for Src initialize header from InnerHeader::new_inner::<T::Item>
-    // * the header is only accessed from InnerHeader::get_header
-    let header = unsafe { InnerHeader::get_header(this.header) };
-    header.weak_count()
+    this.header().weak_count()
   }
   
 }
@@ -80,10 +75,7 @@ impl<T: SrcSlice + ?Sized> Src<T> {
   }
   
   pub fn clone_root(&self) -> Src<T> {
-    // SAFETY:
-    // * all constructor fns for Src initialize header from InnerHeader::new_inner::<T::Item>
-    // * the header is only accessed from InnerHeader::get_header
-    let header = unsafe { InnerHeader::get_header(self.header) };
+    let header = self.header();
     header.inc_strong_count();
     // SAFETY:
     // * all constructor fns for Src initialize header from InnerHeader::new_inner::<T::Item>
@@ -103,10 +95,7 @@ impl<T: SrcSlice + ?Sized> Src<T> {
   }
   
   fn clone_item(this: &Src<T>, index: usize) -> Src<T::Item> {
-    // SAFETY:
-    // * all constructor fns for Src initialize header from InnerHeader::new_inner::<T::Item>
-    // * the header is only accessed from InnerHeader::get_header
-    let header = unsafe { InnerHeader::get_header(this.header) };
+    let header = this.header();
     assert!(index < header.len(), "index {index} out of range for slice of length {}", header.len());
     let start_ptr = unsafe { InnerHeader::get_elem_ptr::<T::Item>(this.header, index) };
     header.inc_strong_count();
@@ -119,10 +108,7 @@ impl<T: SrcSlice + ?Sized> Src<T> {
   }
   
   fn clone_from_bounds(this: &Src<T>, start: Bound<usize>, end: Bound<usize>) -> Src<T> {
-    // SAFETY:
-    // * all constructor fns for Src initialize header from InnerHeader::new_inner::<T::Item>
-    // * the header is only accessed from InnerHeader::get_header
-    let header = unsafe { InnerHeader::get_header(this.header) };
+    let header = this.header();
     let start_inc = match start {
       Bound::Excluded(val) => val + 1,
       Bound::Included(val) => val,
@@ -162,23 +148,12 @@ impl<T> Src<T> {
   
   #[inline]
   pub fn try_single(value: T) -> Result<Src<T>, AllocError> {
-    let Src { header, start, len, _phantom } = Src::try_from_array([value])?;
-    debug_assert_eq!(len, 1);
-    Ok(Self {
-      header,
-      start,
-      len: (),
-      _phantom: PhantomData,
-    })
+    UninitSrc::try_single().map(move |s| s.init(value))
   }
   
   #[inline]
   pub fn clone_as_slice(&self) -> Src<[T]> {
-    // SAFETY:
-    // * all constructor fns for Src initialize header from InnerHeader::new_inner::<T::Item>
-    // * the header is only accessed from InnerHeader::get_header
-    let header = unsafe { InnerHeader::get_header(self.header) };
-    header.inc_strong_count();
+    self.header().inc_strong_count();
     Src {
       header: self.header,
       start: self.start,
@@ -196,28 +171,9 @@ impl<T> Src<[T]> {
     Self::try_from_fn(len, f).unwrap()
   }
   
-  // TODO: if f panics after the first call, then there will be initialized elements that will be "forgotten" by the panic; the unstable std::array::from_fn() uses a guard to drop any already-initialized values, which this should probably do the same
-  pub fn try_from_fn<F: FnMut(usize) -> T>(len: usize, mut f: F) -> Result<Src<[T]>, AllocError> {
-    let header = InnerHeader::new_inner::<T>(len)?;
-    // SAFETY:
-    // * we just got this from InnerHeader::new_inner::<T>
-    // * no one else has seen the ptr yet, so the read/write requirements are fine
-    let start = unsafe { InnerHeader::get_body_ptr::<T>(header) };
-    for i in 0..len {
-      // SAFETY:
-      // * we just got this from InnerHeader::new_inner::<T>;
-      // * no one else has seen the ptr yet except start, which is not being read or written, so the read/write requirements are fine
-      let ptr = unsafe { InnerHeader::get_elem_ptr::<T>(header, i) };
-      let val = f(i);
-      // SAFETY: no one else has seen this element, so write is fine
-      unsafe { ptr.write(val) };
-    }
-    Ok(Self {
-      header,
-      start,
-      len,
-      _phantom: PhantomData,
-    })
+  #[inline]
+  pub fn try_from_fn<F: FnMut(usize) -> T>(len: usize, f: F) -> Result<Src<[T]>, AllocError> {
+    UninitSrc::try_new(len).map(move |s| s.init_from_fn(f))
   }
   
   pub fn from_iter<I: IntoIterator<Item = T, IntoIter: ExactSizeIterator>>(iter: I) -> Src<[T]> {
@@ -235,7 +191,7 @@ impl<T> Src<[T]> {
   }
   
   pub fn try_from_array<const N: usize>(values: [T; N]) -> Result<Src<[T]>, AllocError> {
-    let header = InnerHeader::new_inner::<T>(N)?;
+    let header = InnerHeader::new_inner::<T>(N, 1)?;
     // SAFETY:
     // * we just got this from InnerHeader::new_inner::<T>
     // * no one else has seen the ptr yet, so the read/write requirements are fine
@@ -351,17 +307,22 @@ impl<T: SrcTarget + ?Sized> Clone for Src<T> {
   
   #[inline]
   fn clone(&self) -> Self {
-    // SAFETY:
-    // * all constructor fns for Src initialize header from InnerHeader::new_inner::<T::Item>
-    // * the header is only accessed from InnerHeader::get_header
-    let header = unsafe { InnerHeader::get_header(self.header) };
-    header.inc_strong_count();
+    self.header().inc_strong_count();
     Self {
       header: self.header,
       start: self.start,
       len: self.len,
       _phantom: PhantomData,
     }
+  }
+  
+}
+
+impl<T: Default> Default for Src<T> {
+  
+  #[inline]
+  fn default() -> Self {
+    Self::single(T::default())
   }
   
 }
@@ -458,20 +419,20 @@ impl<T: Ord + SrcTarget + ?Sized> Ord for Src<T> {
   
 }
 
-impl<T: SrcTarget + ?Sized> Pointer for Src<T> {
-  
-  #[inline]
-  fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
-    Pointer::fmt(&self.start, f)
-  }
-  
-}
-
 impl<T: Debug + SrcTarget + ?Sized> Debug for Src<T> {
   
   #[inline]
   fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
     T::fmt(self, f)
+  }
+  
+}
+
+impl<T: SrcTarget + ?Sized> Pointer for Src<T> {
+  
+  #[inline]
+  fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+    Pointer::fmt(&self.start, f)
   }
   
 }
@@ -506,6 +467,13 @@ pub struct WeakSrc<T: SrcTarget + ?Sized> {
 
 impl<T: SrcTarget + ?Sized> WeakSrc<T> {
   
+  fn header(&self) -> &InnerHeader {
+    // SAFETY:
+    // * all constructor fns for Src initialize header from InnerHeader::new_inner::<T::Item>
+    // * the header is only accessed from InnerHeader::get_header
+    unsafe { InnerHeader::get_header(self.header) }
+  }
+  
   #[inline]
   pub fn dangling() -> WeakSrc<T> {
     WeakSrc {
@@ -525,10 +493,7 @@ impl<T: SrcTarget + ?Sized> WeakSrc<T> {
     if self.is_dangling() {
       return None
     }
-    // SAFETY:
-    // * all constructor fns for Src initialize header from InnerHeader::new_inner::<T::Item>; WeakSrcs are either constructed from WeakSrc::dangling (which is covered by self.is_dangling()), or from a Src
-    // * the header is only accessed from InnerHeader::get_header
-    let header = unsafe { InnerHeader::get_header(self.header) };
+    let header = self.header();
     if header.strong_count() == 0 {
       return None
     }
@@ -561,22 +526,29 @@ impl<T: SrcTarget + ?Sized> WeakSrc<T> {
   }
   
   pub fn strong_count(&self) -> usize {
-    // SAFETY:
-    // * all constructor fns for Src initialize header from InnerHeader::new_inner::<T::Item>
-    // * the header is only accessed from InnerHeader::get_header
-    let header = unsafe { InnerHeader::get_header(self.header) };
-    header.strong_count()
+    self.header().strong_count()
   }
   
   pub fn weak_count(&self) -> usize {
-    // SAFETY:
-    // * all constructor fns for Src initialize header from InnerHeader::new_inner::<T::Item>
-    // * the header is only accessed from InnerHeader::get_header
-    let header = unsafe { InnerHeader::get_header(self.header) };
-    header.weak_count()
+    self.header().weak_count()
   }
   
-  // NOTE: WeakSrc could technically support len(), clone_slice(), and clone_root() but I'm not sure it makes sense to; for now, I'm skipping it, but if it becomes important later I may recant
+  // NOTE: WeakSrc could technically support len(), is_empty(), clone_slice(), and clone_root() but I'm not sure it makes sense to; for now, I'm skipping it, but if it becomes important later I may recant
+  
+}
+
+impl<T> WeakSrc<T> {
+  
+  #[inline]
+  pub fn clone_as_slice(&self) -> WeakSrc<[T]> {
+    self.header().inc_weak_count();
+    WeakSrc {
+      header: self.header,
+      start: self.start,
+      len: 1,
+      _phantom: PhantomData,
+    }
+  }
   
 }
 
@@ -584,11 +556,7 @@ impl<T: SrcTarget + ?Sized> Clone for WeakSrc<T> {
   
   fn clone(&self) -> Self {
     if !self.is_dangling() {
-      // SAFETY:
-      // * all constructor fns for Src initialize header from InnerHeader::new_inner::<T::Item>; WeakSrcs are either constructed from WeakSrc::dangling (which is covered by self.is_dangling()), or from a Src
-      // * the header is only accessed from InnerHeader::get_header
-      let header = unsafe { InnerHeader::get_header(self.header) };
-      header.inc_weak_count();
+      self.header().inc_weak_count();
     }
     Self {
       header: self.header,
@@ -605,6 +573,15 @@ impl<T: SrcTarget + ?Sized> Debug for WeakSrc<T> {
   #[inline]
   fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
     write!(f, "(WeakSrc)")
+  }
+  
+}
+
+impl<T: SrcTarget + ?Sized> Pointer for WeakSrc<T> {
+  
+  #[inline]
+  fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+    Pointer::fmt(&self.start, f)
   }
   
 }
@@ -627,6 +604,194 @@ impl<T: SrcTarget + ?Sized> Drop for WeakSrc<T> {
       // * the header is only accessed from InnerHeader::get_header
       unsafe { InnerHeader::drop_weak::<T::Item>(self.header); }
     }
+  }
+  
+}
+
+pub struct UninitSrc<T: SrcTarget + ?Sized> {
+  
+  header: NonNull<InnerHeader>,
+  len: T::Len,
+  _phantom: PhantomData<*const T>,
+  
+}
+
+impl<T: SrcTarget + ?Sized> UninitSrc<T> {
+  
+  fn header(&self) -> &InnerHeader {
+    // SAFETY:
+    // * all constructor fns for Src initialize header from InnerHeader::new_inner::<T::Item>
+    // * the header is only accessed from InnerHeader::get_header
+    unsafe { InnerHeader::get_header(self.header) }
+  }
+  
+  pub fn weak(&self) -> WeakSrc<T> {
+    // safety note: the strong count is 0 until this UninitSrc is initialized into a Src, so the WeakSrc will never read or write from the body during the lifetime of the UninitSrc
+    self.header().inc_weak_count();
+    // SAFETY:
+    // * all constructor fns for UninitSrc<T> initialize self.header from InnerHeader::new_inner::<T>
+    // * the header is only accessed from InnerHeader::get_header
+    let start = unsafe { InnerHeader::get_body_ptr::<T::Item>(self.header) };
+    WeakSrc {
+      header: self.header,
+      start,
+      len: self.len,
+      _phantom: PhantomData,
+    }
+  }
+  
+  #[inline]
+  pub fn weak_count(&self) -> usize {
+    self.header().weak_count()
+  }
+  
+}
+
+impl<T: SrcSlice + ?Sized> UninitSrc<T> {
+  
+  #[inline]
+  pub fn len(&self) -> usize {
+    self.len
+  }
+  
+  #[inline]
+  pub fn is_empty(&self) -> bool {
+    self.len == 0
+  }
+  
+}
+
+impl<T: SrcSlice + ?Sized> UninitSrc<T> {
+  
+  #[inline]
+  pub fn new(len: usize) -> UninitSrc<T> {
+    Self::try_new(len).unwrap()
+  }
+  
+  pub fn try_new(len: usize) -> Result<UninitSrc<T>, AllocError> {
+    let header = InnerHeader::new_inner::<T::Item>(len, 0)?;
+    Ok(Self {
+      header,
+      len,
+      _phantom: PhantomData,
+    })
+  }
+  
+}
+
+impl<T> UninitSrc<T> {
+  
+  #[inline]
+  pub fn single() -> UninitSrc<T> {
+    Self::try_single().unwrap()
+  }
+  
+  pub fn try_single() -> Result<UninitSrc<T>, AllocError> {
+    let UninitSrc { header, len, _phantom } = UninitSrc::<[T]>::try_new(1)?;
+    debug_assert_eq!(len, 1);
+    Ok(UninitSrc {
+      header,
+      len: (),
+      _phantom: PhantomData,
+    })
+  }
+  
+  pub fn init(self, value: T) -> Src<T> {
+    // SAFETY:
+    // * all constructor fns for UninitSrc<T> initialize self.header from InnerHeader::new_inner::<T>
+    // * the header is only accessed from InnerHeader::get_header
+    let start = unsafe { InnerHeader::get_body_ptr::<T>(self.header) };
+    // SAFETY: no one else has seen the body of the allocation (because the weaks only look at the header after the strong count has been initialized), so this write is okay
+    unsafe { start.write(value); }
+    self.header().inc_strong_count();
+    Src {
+      header: self.header,
+      start,
+      len: self.len,
+      _phantom: PhantomData,
+    }
+  }
+  
+}
+
+impl<T> UninitSrc<[T]> {
+  
+  // TODO: if f panics after the first call, then there will be initialized elements that will be "forgotten" in the panic; the unstable std::array::from_fn() uses a guard to drop any already-initialized values, which this should probably do the same
+  pub fn init_from_fn<F: FnMut(usize) -> T>(self, mut f: F) -> Src<[T]> {
+    let header = self.header();
+    // SAFETY:
+    // * all constructor fns for UninitSrc<T> initialize self.header from InnerHeader::new_inner::<T>
+    // * the header is only accessed from InnerHeader::get_header
+    let start = unsafe { InnerHeader::get_body_ptr::<T>(self.header) };
+    for i in 0..header.len() {
+      // SAFETY:
+      // * all constructor fns for UninitSrc<T> initialize self.header from InnerHeader::new_inner::<T>
+      // * the header is only accessed from InnerHeader::get_header
+      let ptr = unsafe { InnerHeader::get_elem_ptr::<T>(self.header, i) };
+      let val = f(i);
+      // SAFETY: no one else has seen the body of the allocation (because the weaks only look at the header after the strong count has been initialized), so this write is okay
+      unsafe { ptr.write(val) };
+    }
+    header.inc_strong_count();
+    Src {
+      header: self.header,
+      start,
+      len: self.len,
+      _phantom: PhantomData,
+    }
+  }
+  
+}
+
+impl<T: Default> UninitSrc<[T]> {
+  
+  #[inline]
+  pub fn init_from_default(self) -> Src<[T]> {
+    self.init_from_fn(|_| T::default())
+  }
+  
+}
+
+impl<T: Clone> UninitSrc<[T]> {
+  
+  #[inline]
+  pub fn init_filled(self, value: &T) -> Src<[T]> {
+    self.init_from_fn(|_| value.clone())
+  }
+  
+}
+
+impl<T: SrcTarget + ?Sized> Debug for UninitSrc<T> {
+  
+  #[inline]
+  fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+    write!(f, "(UninitSrc)")
+  }
+  
+}
+
+impl<T: SrcTarget + ?Sized> Pointer for UninitSrc<T> {
+  
+  #[inline]
+  fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+    // SAFETY:
+    // * all constructor fns for Src initialize header from InnerHeader::new_inner::<T::Item>
+    // * the header is only accessed from InnerHeader::get_header
+    // NOTE: the body is not expected to be initialized, but it is also not used
+    let start = unsafe { InnerHeader::get_body_ptr::<T::Item>(self.header) };
+    Pointer::fmt(&start, f)
+  }
+  
+}
+
+impl<T: SrcTarget + ?Sized> Drop for UninitSrc<T> {
+  
+  fn drop(&mut self) {
+    // SAFETY:
+    // * all constructor fns for UninitSrc initialize header from InnerHeader::new_inner::<T::Item>
+    // * the header is only accessed from InnerHeader::get_header
+    // NOTE: the UninitSrc logically holds one weak reference
+    unsafe { InnerHeader::drop_weak::<T::Item>(self.header); }
   }
   
 }
