@@ -1,6 +1,6 @@
 mod inner;
 
-use std::{borrow::Borrow, cmp::Ordering, error::Error, fmt::{self, Debug, Display, Formatter, Pointer}, hash::{Hash, Hasher}, marker::PhantomData, ops::{Bound, Deref, Range, RangeFrom, RangeFull, RangeInclusive, RangeTo, RangeToInclusive}, ptr::{without_provenance_mut, NonNull}, slice, str::Utf8Error, usize};
+use std::{borrow::Borrow, cmp::Ordering, error::Error, fmt::{self, Debug, Display, Formatter, Pointer}, hash::{Hash, Hasher}, marker::PhantomData, mem::forget, ops::{Bound, Deref, Range, RangeFrom, RangeFull, RangeInclusive, RangeTo, RangeToInclusive}, ptr::{without_provenance_mut, NonNull}, slice, str::Utf8Error, usize};
 
 use inner::*;
 
@@ -704,12 +704,14 @@ impl<T> UninitSrc<T> {
     // SAFETY: no one else has seen the body of the allocation (because the weaks only look at the header after the strong count has been initialized), so this write is okay
     unsafe { start.write(value); }
     self.header().inc_strong_count();
-    Src {
+    let this = Src {
       header: self.header,
       start,
       len: self.len,
       _phantom: PhantomData,
-    }
+    };
+    forget(self); // don't drop the weak held by the UninitSrc; it logically transfers to the Src
+    this
   }
   
 }
@@ -733,12 +735,14 @@ impl<T> UninitSrc<[T]> {
       unsafe { ptr.write(val) };
     }
     header.inc_strong_count();
-    Src {
+    let this = Src {
       header: self.header,
       start,
       len: self.len,
       _phantom: PhantomData,
-    }
+    };
+    forget(self); // don't drop the weak held by the UninitSrc; it logically transfers to the Src
+    this
   }
   
 }
