@@ -26,12 +26,12 @@ impl<T: SrcTarget + ?Sized> Src<T> {
   }
   
   #[inline]
-  pub fn is_root(&self) -> bool {
+  pub fn is_root(this: &Src<T>) -> bool {
     // SAFETY:
     // * all constructor fns for Src initialize header from InnerHeader::new_inner::<T::Item>
     // * the header is only accessed from InnerHeader::get_header
-    let root_start = unsafe { InnerHeader::get_body_ptr(self.header) };
-    self.start == root_start
+    let root_start = unsafe { InnerHeader::get_body_ptr(this.header) };
+    this.start == root_start
   }
   
   pub fn downgrade(this: &Src<T>) -> WeakSrc<T> {
@@ -46,6 +46,22 @@ impl<T: SrcTarget + ?Sized> Src<T> {
       len: this.len,
       _phantom: PhantomData,
     }
+  }
+  
+  pub fn strong_count(this: &Src<T>) -> usize {
+    // SAFETY:
+    // * all constructor fns for Src initialize header from InnerHeader::new_inner::<T::Item>
+    // * the header is only accessed from InnerHeader::get_header
+    let header = unsafe { InnerHeader::get_header(this.header) };
+    header.strong_count()
+  }
+  
+  pub fn weak_count(this: &Src<T>) -> usize {
+    // SAFETY:
+    // * all constructor fns for Src initialize header from InnerHeader::new_inner::<T::Item>
+    // * the header is only accessed from InnerHeader::get_header
+    let header = unsafe { InnerHeader::get_header(this.header) };
+    header.weak_count()
   }
   
 }
@@ -435,7 +451,42 @@ impl<T: SrcTarget + ?Sized> WeakSrc<T> {
     })
   }
   
-  // NOTE: WeakSrc could technically support len() and clone_slice(), but I'm not sure it makes sense to; for now, I'm skipping it, but if it becomes important later I may recant
+  #[inline]
+  pub fn ptr_eq(&self, other: &Src<T>) -> bool {
+    self.start == other.start
+  }
+  
+  #[inline]
+  pub fn root_ptr_eq(&self, other: &Src<T>) -> bool {
+    self.header == other.header
+  }
+  
+  #[inline]
+  pub fn is_root(&self) -> bool {
+    // SAFETY:
+    // * all constructor fns for Src initialize header from InnerHeader::new_inner::<T::Item>
+    // * the header is only accessed from InnerHeader::get_header
+    let root_start = unsafe { InnerHeader::get_body_ptr(self.header) };
+    self.start == root_start
+  }
+  
+  pub fn strong_count(&self) -> usize {
+    // SAFETY:
+    // * all constructor fns for Src initialize header from InnerHeader::new_inner::<T::Item>
+    // * the header is only accessed from InnerHeader::get_header
+    let header = unsafe { InnerHeader::get_header(self.header) };
+    header.strong_count()
+  }
+  
+  pub fn weak_count(&self) -> usize {
+    // SAFETY:
+    // * all constructor fns for Src initialize header from InnerHeader::new_inner::<T::Item>
+    // * the header is only accessed from InnerHeader::get_header
+    let header = unsafe { InnerHeader::get_header(self.header) };
+    header.weak_count()
+  }
+  
+  // NOTE: WeakSrc could technically support len(), clone_slice(), and clone_root() but I'm not sure it makes sense to; for now, I'm skipping it, but if it becomes important later I may recant
   
 }
 
