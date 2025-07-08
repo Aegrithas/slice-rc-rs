@@ -254,7 +254,7 @@ impl<T: Clone> Src<[T]> {
   
   #[inline]
   pub fn filled(len: usize, value: &T) -> Src<[T]> {
-    Self::try_from_fill(len, value).unwrap()
+    Self::try_filled(len, value).unwrap()
   }
   
   #[inline]
