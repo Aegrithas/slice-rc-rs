@@ -213,7 +213,7 @@ impl<T> Src<[T]> {
   }
   
   #[inline]
-  pub fn copy_from(values: &[T]) -> Src<[T]> where T: Copy {
+  pub fn copy_from_slice(values: &[T]) -> Src<[T]> where T: Copy {
     Self::from_fn(values.len(), |i| {
       // SAFETY: i ranges from 0..len==src.len()
       *unsafe { values.get_unchecked(i) }
@@ -227,7 +227,7 @@ impl Src<str> {
   #[inline]
   pub fn new(s: impl AsRef<str>) -> Src<str> {
     let s = s.as_ref();
-    let Src { header, start, len, _phantom } = Src::copy_from(s.as_bytes());
+    let Src { header, start, len, _phantom } = Src::copy_from_slice(s.as_bytes());
     Src { header, start, len, _phantom: PhantomData }
   }
   
