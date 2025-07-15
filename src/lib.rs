@@ -1,6 +1,6 @@
 mod inner;
 
-use std::{borrow::Borrow, cmp::Ordering, fmt::{self, Debug, Formatter, Pointer}, hash::{Hash, Hasher}, marker::PhantomData, mem::forget, ops::{Bound, Deref, Range, RangeFrom, RangeFull, RangeInclusive, RangeTo, RangeToInclusive}, ptr::{without_provenance_mut, NonNull}, slice, str::Utf8Error, usize};
+use std::{borrow::Borrow, cmp::Ordering, fmt::{self, Debug, Formatter, Pointer}, hash::{Hash, Hasher}, marker::PhantomData, mem::forget, ops::{Bound, Deref, Index, Range, RangeFrom, RangeFull, RangeInclusive, RangeTo, RangeToInclusive}, ptr::{without_provenance_mut, NonNull}, slice, str::Utf8Error, usize};
 
 use inner::*;
 
@@ -303,6 +303,17 @@ impl<T: SrcTarget + ?Sized> AsRef<T> for Src<T> {
   #[inline]
   fn as_ref(&self) -> &T {
     &**self
+  }
+  
+}
+
+impl<T: SrcTarget + Index<I> + ?Sized, I> Index<I> for Src<T> {
+  
+  type Output = T::Output;
+  
+  #[inline]
+  fn index(&self, index: I) -> &Self::Output {
+    &self.deref()[index]
   }
   
 }
