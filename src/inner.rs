@@ -1,6 +1,4 @@
-use std::{alloc::{alloc, dealloc, Layout, LayoutError}, cell::Cell, ptr::NonNull};
-
-use crate::AllocError;
+use std::{alloc::{alloc, dealloc, handle_alloc_error, Layout, LayoutError}, cell::Cell, ptr::NonNull};
 
 // NOTE: this should not need to be dropped; `Layout` and `usize` are `Copy`, so drop doesn't matter; `Cell<T>` should only need to be dropped if `T` does
 pub struct InnerHeader {
@@ -22,12 +20,14 @@ impl InnerHeader {
   
   // SAFETY:
   // various static methods on InnerHeader offer access to the contents; nothing else is guaranteed to be sound
-  pub fn new_inner<T>(len: usize, init_strong_count: usize) -> Result<NonNull<InnerHeader>, AllocError> {
-    let (layout, body_offset) = Self::inner_layout::<T>(len).map_err(|_| AllocError::TooLarge)?;
+  pub fn new_inner<T>(len: usize, init_strong_count: usize) -> NonNull<InnerHeader> {
+    let Ok((layout, body_offset)) = Self::inner_layout::<T>(len) else {
+      panic!("length overflow")
+    };
     // SAFETY: layout is guaranteed to be non-zero because it contains an `InnerHeader`
     let ptr = unsafe { alloc(layout) }.cast();
     let Some(ptr) = NonNull::new(ptr) else {
-      return Err(AllocError::OutOfMemory)
+      handle_alloc_error(layout)
     };
     let strong_count = Cell::new(init_strong_count);
     // all strong references logically hold one collective weak reference
@@ -35,7 +35,7 @@ impl InnerHeader {
     let header = Self { layout, body_offset, len, strong_count, weak_count };
     // SAFETY: this ptr just came from std::alloc::alloc; therefore, it is both aligned and valid for reads and writes
     unsafe { ptr.write(header); }
-    Ok(ptr)
+    ptr
   }
   
   // SAFETY:

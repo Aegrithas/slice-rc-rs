@@ -1,6 +1,6 @@
 mod inner;
 
-use std::{borrow::Borrow, cmp::Ordering, error::Error, fmt::{self, Debug, Display, Formatter, Pointer}, hash::{Hash, Hasher}, marker::PhantomData, mem::forget, ops::{Bound, Deref, Range, RangeFrom, RangeFull, RangeInclusive, RangeTo, RangeToInclusive}, ptr::{without_provenance_mut, NonNull}, slice, str::Utf8Error, usize};
+use std::{borrow::Borrow, cmp::Ordering, fmt::{self, Debug, Formatter, Pointer}, hash::{Hash, Hasher}, marker::PhantomData, mem::forget, ops::{Bound, Deref, Range, RangeFrom, RangeFull, RangeInclusive, RangeTo, RangeToInclusive}, ptr::{without_provenance_mut, NonNull}, slice, str::Utf8Error, usize};
 
 use inner::*;
 
@@ -143,12 +143,7 @@ impl<T> Src<T> {
   
   #[inline]
   pub fn single(value: T) -> Src<T> {
-    Self::try_single(value).unwrap()
-  }
-  
-  #[inline]
-  pub fn try_single(value: T) -> Result<Src<T>, AllocError> {
-    UninitSrc::try_single().map(move |s| s.init(value))
+    UninitSrc::single().init(value)
   }
   
   #[inline]
@@ -168,54 +163,35 @@ impl<T> Src<[T]> {
   
   #[inline]
   pub fn from_fn<F: FnMut(usize) -> T>(len: usize, f: F) -> Src<[T]> {
-    Self::try_from_fn(len, f).unwrap()
+    UninitSrc::new(len).init_from_fn(f)
   }
   
-  #[inline]
-  pub fn try_from_fn<F: FnMut(usize) -> T>(len: usize, f: F) -> Result<Src<[T]>, AllocError> {
-    UninitSrc::try_new(len).map(move |s| s.init_from_fn(f))
-  }
-  
-  #[inline]
-  pub fn cyclic_from_fn<F: FnMut(&WeakSrc<[T]>, usize) -> T>(len: usize, f: F) -> Src<[T]> {
-    Self::try_cyclic_from_fn(len, f).unwrap()
-  }
-  
-  #[inline]
-  pub fn try_cyclic_from_fn<F: FnMut(&WeakSrc<[T]>, usize) -> T>(len: usize, mut f: F) -> Result<Src<[T]>, AllocError> {
-    let this = UninitSrc::try_new(len)?;
+  pub fn cyclic_from_fn<F: FnMut(&WeakSrc<[T]>, usize) -> T>(len: usize, mut f: F) -> Src<[T]> {
+    let this = UninitSrc::new(len);
     let weak = this.weak();
-    Ok(this.init_from_fn(|i| f(&weak, i)))
+    this.init_from_fn(|i| f(&weak, i))
   }
   
   pub fn from_iter<I: IntoIterator<Item = T, IntoIter: ExactSizeIterator>>(iter: I) -> Src<[T]> {
-    Self::try_from_iter(iter).unwrap()
-  }
-  
-  pub fn try_from_iter<I: IntoIterator<Item = T, IntoIter: ExactSizeIterator>>(iter: I) -> Result<Src<[T]>, AllocError> {
     let mut iter = iter.into_iter();
-    Self::try_from_fn(iter.len(), |_| iter.next().unwrap())
+    Self::from_fn(iter.len(), |_| iter.next().unwrap())
   }
   
   #[inline]
   pub fn from_array<const N: usize>(values: [T; N]) -> Src<[T]> {
-    Self::try_from_array(values).unwrap()
-  }
-  
-  pub fn try_from_array<const N: usize>(values: [T; N]) -> Result<Src<[T]>, AllocError> {
-    let header = InnerHeader::new_inner::<T>(N, 1)?;
+    let header = InnerHeader::new_inner::<T>(N, 1);
     // SAFETY:
     // * we just got this from InnerHeader::new_inner::<T>
     // * no one else has seen the ptr yet, so the read/write requirements are fine
     let start = unsafe { InnerHeader::get_body_ptr::<T>(header) };
     // SAFETY: no one else has seen the body, so write is fine; InnerHeader::new_inner::<T>(N) guarantees N elements, so we definitely have room for [T; N]
     unsafe { start.cast().write(values) };
-    Ok(Self {
+    Self {
       header,
       start,
       len: N,
       _phantom: PhantomData,
-    })
+    }
   }
   
 }
@@ -224,12 +200,7 @@ impl<T: Default> Src<[T]> {
   
   #[inline]
   pub fn from_default(len: usize) -> Src<[T]> {
-    Self::try_from_default(len).unwrap()
-  }
-  
-  #[inline]
-  pub fn try_from_default(len: usize) -> Result<Src<[T]>, AllocError> {
-    Self::try_from_fn(len, |_| Default::default())
+    Self::from_fn(len, |_| Default::default())
   }
   
 }
@@ -238,22 +209,12 @@ impl<T: Clone> Src<[T]> {
   
   #[inline]
   pub fn filled(len: usize, value: &T) -> Src<[T]> {
-    Self::try_filled(len, value).unwrap()
-  }
-  
-  #[inline]
-  pub fn try_filled(len: usize, value: &T) -> Result<Src<[T]>, AllocError> {
-    Self::try_from_fn(len, |_| value.clone())
+    Self::from_fn(len, |_| value.clone())
   }
   
   #[inline]
   pub fn clone_from_slice(values: &[T]) -> Src<[T]> {
-    Self::try_clone_from_slice(values).unwrap()
-  }
-  
-  #[inline]
-  pub fn try_clone_from_slice(values: &[T]) -> Result<Src<[T]>, AllocError> {
-    Self::try_from_fn(values.len(), |i| {
+    Self::from_fn(values.len(), |i| {
       // SAFETY: i ranges from 0..len==src.len()
       unsafe { values.get_unchecked(i) }.clone()
     })
@@ -265,12 +226,7 @@ impl<T: Copy> Src<[T]> {
   
   #[inline]
   pub fn copy_from(values: &[T]) -> Src<[T]> {
-    Self::try_copy_from(values).unwrap()
-  }
-  
-  #[inline]
-  pub fn try_copy_from(values: &[T]) -> Result<Src<[T]>, AllocError> {
-    Self::try_from_fn(values.len(), |i| {
+    Self::from_fn(values.len(), |i| {
       // SAFETY: i ranges from 0..len==src.len()
       *unsafe { values.get_unchecked(i) }
     })
@@ -282,14 +238,9 @@ impl Src<str> {
   
   #[inline]
   pub fn new(s: impl AsRef<str>) -> Src<str> {
-    Self::try_new(s).unwrap()
-  }
-  
-  #[inline]
-  pub fn try_new(s: impl AsRef<str>) -> Result<Src<str>, AllocError> {
     let s = s.as_ref();
-    let Src { header, start, len, _phantom } = Src::try_copy_from(s.as_bytes())?;
-    Ok(Src { header, start, len, _phantom: PhantomData })
+    let Src { header, start, len, _phantom } = Src::copy_from(s.as_bytes());
+    Src { header, start, len, _phantom: PhantomData }
   }
   
   #[inline]
@@ -673,39 +624,17 @@ impl<T: SrcSlice + ?Sized> UninitSrc<T> {
   
 }
 
-impl<T: SrcSlice + ?Sized> UninitSrc<T> {
-  
-  #[inline]
-  pub fn new(len: usize) -> UninitSrc<T> {
-    Self::try_new(len).unwrap()
-  }
-  
-  pub fn try_new(len: usize) -> Result<UninitSrc<T>, AllocError> {
-    let header = InnerHeader::new_inner::<T::Item>(len, 0)?;
-    Ok(Self {
-      header,
-      len,
-      _phantom: PhantomData,
-    })
-  }
-  
-}
-
 impl<T> UninitSrc<T> {
   
   #[inline]
   pub fn single() -> UninitSrc<T> {
-    Self::try_single().unwrap()
-  }
-  
-  pub fn try_single() -> Result<UninitSrc<T>, AllocError> {
-    let UninitSrc { header, len, _phantom } = UninitSrc::<[T]>::try_new(1)?;
+    let UninitSrc { header, len, _phantom } = UninitSrc::<[T]>::new(1);
     debug_assert_eq!(len, 1);
-    Ok(UninitSrc {
+    UninitSrc {
       header,
       len: (),
       _phantom: PhantomData,
-    })
+    }
   }
   
   pub fn init(self, value: T) -> Src<T> {
@@ -729,6 +658,20 @@ impl<T> UninitSrc<T> {
 }
 
 impl<T> UninitSrc<[T]> {
+  
+  // NOTE: this could be generalized to UninitSrc<T> for T: SrcSlice, but given
+  //   a) that there's no way to initialize any T: SrcSlice other than [T], and
+  //   b) that UninitSrc is really only useful for self-reference, which is not relevant for str,
+  // this is placed here for simplicity
+  #[inline]
+  pub fn new(len: usize) -> UninitSrc<[T]> {
+    let header = InnerHeader::new_inner::<T>(len, 0);
+    Self {
+      header,
+      len,
+      _phantom: PhantomData,
+    }
+  }
   
   pub fn init_from_fn<F: FnMut(usize) -> T>(self, mut f: F) -> Src<[T]> {
     let header = self.header();
@@ -1120,27 +1063,3 @@ mod sealed {
   }
   
 }
-
-#[derive(Copy, Clone, Hash, Eq, PartialEq, Debug)]
-pub enum AllocError {
-  
-  /// Layout overflowed valid allocation size; this will always be the result for this size allocation (for the same size of usize).
-  TooLarge,
-  /// Allocator failed
-  OutOfMemory,
-  
-}
-
-impl Display for AllocError {
-  
-  #[inline]
-  fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
-    match self {
-      Self::TooLarge => write!(f, "tried to allocate a chunk of memory that is too large"),
-      Self::OutOfMemory => write!(f, "ran out of memory trying to allocate"),
-    }
-  }
-  
-}
-
-impl Error for AllocError {}
