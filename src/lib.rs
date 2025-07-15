@@ -194,38 +194,26 @@ impl<T> Src<[T]> {
     }
   }
   
-}
-
-impl<T: Default> Src<[T]> {
-  
   #[inline]
-  pub fn from_default(len: usize) -> Src<[T]> {
+  pub fn from_default(len: usize) -> Src<[T]> where T: Default {
     Self::from_fn(len, |_| Default::default())
   }
   
-}
-
-impl<T: Clone> Src<[T]> {
-  
   #[inline]
-  pub fn filled(len: usize, value: &T) -> Src<[T]> {
+  pub fn filled(len: usize, value: &T) -> Src<[T]> where T: Clone {
     Self::from_fn(len, |_| value.clone())
   }
   
   #[inline]
-  pub fn clone_from_slice(values: &[T]) -> Src<[T]> {
+  pub fn clone_from_slice(values: &[T]) -> Src<[T]> where T: Clone {
     Self::from_fn(values.len(), |i| {
       // SAFETY: i ranges from 0..len==src.len()
       unsafe { values.get_unchecked(i) }.clone()
     })
   }
   
-}
-
-impl<T: Copy> Src<[T]> {
-  
   #[inline]
-  pub fn copy_from(values: &[T]) -> Src<[T]> {
+  pub fn copy_from(values: &[T]) -> Src<[T]> where T: Copy {
     Self::from_fn(values.len(), |i| {
       // SAFETY: i ranges from 0..len==src.len()
       *unsafe { values.get_unchecked(i) }
@@ -702,21 +690,13 @@ impl<T> UninitSrc<[T]> {
     this
   }
   
-}
-
-impl<T: Default> UninitSrc<[T]> {
-  
   #[inline]
-  pub fn init_from_default(self) -> Src<[T]> {
+  pub fn init_from_default(self) -> Src<[T]> where T: Default {
     self.init_from_fn(|_| T::default())
   }
   
-}
-
-impl<T: Clone> UninitSrc<[T]> {
-  
   #[inline]
-  pub fn init_filled(self, value: &T) -> Src<[T]> {
+  pub fn init_filled(self, value: &T) -> Src<[T]> where T: Clone {
     self.init_from_fn(|_| value.clone())
   }
   
