@@ -214,10 +214,25 @@ impl<T> Src<[T]> {
   
   #[inline]
   pub fn copy_from_slice(values: &[T]) -> Src<[T]> where T: Copy {
-    Self::from_fn(values.len(), |i| {
-      // SAFETY: i ranges from 0..len==src.len()
-      *unsafe { values.get_unchecked(i) }
-    })
+    let len = values.len();
+    let header = InnerHeader::new_inner::<T>(len, 1);
+    // SAFETY:
+    // * we just got this from InnerHeader::new_inner::<T>
+    // * no one else has seen the ptr yet, so the read/write requirements are fine
+    let start = unsafe { InnerHeader::get_body_ptr::<T>(header) };
+    // SAFETY: references can't be null
+    let values = unsafe { NonNull::new_unchecked(values.as_ptr().cast_mut()) };
+    // SAFETY:
+    // * values is from a reference, and is therefore valid
+    // * InnerHeader::new_inner::<T>(len) guarantees that start is valid for len * size_of::<T>() bytes and aligned for T
+    // * start just came from a new allocation, and therefore doesn't overlap with a slice that was passed into this function
+    unsafe { values.copy_to_nonoverlapping(start, len); }
+    Self {
+      header,
+      start,
+      len,
+      _phantom: PhantomData,
+    }
   }
   
 }
