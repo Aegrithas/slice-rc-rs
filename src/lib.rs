@@ -176,6 +176,18 @@ impl<T> Src<[T]> {
     UninitSrc::try_new(len).map(move |s| s.init_from_fn(f))
   }
   
+  #[inline]
+  pub fn cyclic_from_fn<F: FnMut(&WeakSrc<[T]>, usize) -> T>(len: usize, f: F) -> Src<[T]> {
+    Self::try_cyclic_from_fn(len, f).unwrap()
+  }
+  
+  #[inline]
+  pub fn try_cyclic_from_fn<F: FnMut(&WeakSrc<[T]>, usize) -> T>(len: usize, mut f: F) -> Result<Src<[T]>, AllocError> {
+    let this = UninitSrc::try_new(len)?;
+    let weak = this.weak();
+    Ok(this.init_from_fn(|i| f(&weak, i)))
+  }
+  
   pub fn from_iter<I: IntoIterator<Item = T, IntoIter: ExactSizeIterator>>(iter: I) -> Src<[T]> {
     Self::try_from_iter(iter).unwrap()
   }
@@ -1115,7 +1127,7 @@ pub enum AllocError {
   /// Layout overflowed valid allocation size; this will always be the result for this size allocation (for the same size of usize).
   TooLarge,
   /// Allocator failed
-  OutOfMemory
+  OutOfMemory,
   
 }
 
