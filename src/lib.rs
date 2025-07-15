@@ -689,6 +689,7 @@ impl<T> UninitSrc<[T]> {
       unsafe { ptr.write(val) };
       guard.initialized += 1;
     }
+    // if all elements are successfully initialized, then forget the drop guard; in other words, the guard only drops the contents if a panic occurs part way through initialization
     forget(guard);
     header.inc_strong_count();
     let this = Src {
