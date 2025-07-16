@@ -74,41 +74,63 @@ impl<T: SrcSlice + ?Sized> Src<T> {
     self.len == 0
   }
   
-  pub fn clone_root(&self) -> Src<T> {
+  pub fn into_root(self) -> Src<T> {
     let header = self.header();
-    header.inc_strong_count();
     // SAFETY:
     // * all constructor fns for Src initialize header from InnerHeader::new_inner::<T::Item>
     // * the header is only accessed from InnerHeader::get_header
     let start = unsafe { InnerHeader::get_body_ptr(self.header) };
-    Src {
+    let this = Src {
       header: self.header,
       start,
       len: header.len(),
       _phantom: PhantomData,
-    }
+    };
+    forget(self); // don't modify the strong count because this is logically the same Src
+    this
   }
   
   #[inline]
-  pub fn clone_slice<I: CloneSliceIndex<T>>(&self, index: I) -> Src<I::Output> {
-    index.clone_get(self)
+  pub fn clone_root(&self) -> Src<T> {
+    self.clone().into_root()
   }
   
-  fn clone_item(this: &Src<T>, index: usize) -> Src<T::Item> {
-    let header = this.header();
+  #[inline]
+  pub fn downgrade_root(&self) -> WeakSrc<T> {
+    Self::downgrade(self).into_root()
+  }
+  
+  #[inline]
+  pub fn into_slice<I: SrcIndex<T>>(self, index: I) -> Src<I::Output> {
+    index.get(self)
+  }
+  
+  #[inline]
+  pub fn clone_slice<I: SrcIndex<T>>(&self, index: I) -> Src<I::Output> {
+    self.clone().into_slice(index)
+  }
+  
+  #[inline]
+  pub fn downgrade_slice<I: SrcIndex<T>>(&self, index: I) -> WeakSrc<I::Output> {
+    Src::downgrade(self).into_slice(index)
+  }
+  
+  fn into_item(self, index: usize) -> Src<T::Item> {
+    let header = self.header();
     assert!(index < header.len(), "index {index} out of range for slice of length {}", header.len());
-    let start_ptr = unsafe { InnerHeader::get_elem_ptr::<T::Item>(this.header, index) };
-    header.inc_strong_count();
-    Src {
-      header: this.header,
+    let start_ptr = unsafe { InnerHeader::get_elem_ptr::<T::Item>(self.header, index) };
+    let this = Src {
+      header: self.header,
       start: start_ptr,
       len: (),
       _phantom: PhantomData,
-    }
+    };
+    forget(self); // don't modify the strong count because this is logically the same Src
+    this
   }
   
-  fn clone_from_bounds(this: &Src<T>, start: Bound<usize>, end: Bound<usize>) -> Src<T> {
-    let header = this.header();
+  fn into_slice_from_bounds(self, start: Bound<usize>, end: Bound<usize>) -> Src<T> {
+    let header = self.header();
     let start_inc = match start {
       Bound::Excluded(val) => val + 1,
       Bound::Included(val) => val,
@@ -121,20 +143,21 @@ impl<T: SrcSlice + ?Sized> Src<T> {
     };
     assert!(start_inc <= end_exc, "slice index starts at {start_inc} but ends at {end_exc}");
     assert!(end_exc <= header.len(), "range end index {end_exc} out of range for slice of length {}", header.len());
-    T::validate_indices(this, start_inc, end_exc);
+    T::validate_range(&self, start_inc..end_exc);
     let len = end_exc - start_inc;
     // SAFETY:
     // * all constructor fns for Src initialize header from InnerHeader::new_inner::<T::Item>
     // * the header is only accessed from InnerHeader::get_header
     // * the assertions verify that start_exc <= end_exc <= header.len
-    let start_ptr = unsafe { InnerHeader::get_elem_ptr::<T::Item>(this.header, start_inc) };
-    header.inc_strong_count();
-    Self {
-      header: this.header,
+    let start_ptr = unsafe { InnerHeader::get_elem_ptr::<T::Item>(self.header, start_inc) };
+    let this = Src {
+      header: self.header,
       start: start_ptr,
       len,
       _phantom: PhantomData,
-    }
+    };
+    forget(self); // don't modify the strong count because this is logically the same Src
+    this
   }
   
 }
@@ -147,14 +170,25 @@ impl<T> Src<T> {
   }
   
   #[inline]
-  pub fn clone_as_slice(&self) -> Src<[T]> {
-    self.header().inc_strong_count();
-    Src {
-      header: self.header,
-      start: self.start,
+  pub fn as_slice(this: Src<T>) -> Src<[T]> {
+    let _this = Src {
+      header: this.header,
+      start: this.start,
       len: 1,
       _phantom: PhantomData,
-    }
+    };
+    forget(this); // don't modify the strong count because this is logically the same Src
+    _this
+  }
+  
+  #[inline]
+  pub fn clone_as_slice(this: &Src<T>) -> Src<[T]> {
+    Src::as_slice(this.clone())
+  }
+  
+  #[inline]
+  pub fn downgrade_as_slice(this: &Src<T>) -> WeakSrc<[T]> {
+    Self::downgrade(this).as_slice()
   }
   
 }
@@ -262,8 +296,8 @@ impl Src<str> {
   }
   
   #[inline]
-  pub fn as_bytes(self: Src<str>) -> Src<[u8]> {
-    let Src { header, start, len, _phantom } = self;
+  pub fn as_bytes(this: Src<str>) -> Src<[u8]> {
+    let Src { header, start, len, _phantom } = this;
     Src { header, start, len, _phantom: PhantomData }
   }
   
@@ -444,9 +478,12 @@ pub struct WeakSrc<T: SrcTarget + ?Sized> {
 
 impl<T: SrcTarget + ?Sized> WeakSrc<T> {
   
-  fn header(&self) -> &InnerHeader {
+  // SAFETY:
+  // requires:
+  // * this weak is not dangling
+  unsafe fn header(&self) -> &InnerHeader {
     // SAFETY:
-    // * all constructor fns for Src initialize header from InnerHeader::new_inner::<T::Item>
+    // * all constructor fns for Src and UniinitSrc initialize header from InnerHeader::new_inner::<T::Item>; a WeakSrc must be constructed either from a Src, an UninitSrc, or must be dangling; the safety requirement that this is not the lattermost is passed on to the caller
     // * the header is only accessed from InnerHeader::get_header
     unsafe { InnerHeader::get_header(self.header) }
   }
@@ -470,7 +507,8 @@ impl<T: SrcTarget + ?Sized> WeakSrc<T> {
     if self.is_dangling() {
       return None
     }
-    let header = self.header();
+    // SAFETY: we just checked that this weak is not dangling
+    let header = unsafe { self.header() };
     if header.strong_count() == 0 {
       return None
     }
@@ -503,28 +541,171 @@ impl<T: SrcTarget + ?Sized> WeakSrc<T> {
   }
   
   pub fn strong_count(&self) -> usize {
-    self.header().strong_count()
+    if !self.is_dangling() {
+      // SAFETY: we just checked that this weak is not dangling
+      unsafe { self.header() }.strong_count()
+    } else {
+      0
+    }
   }
   
   pub fn weak_count(&self) -> usize {
-    self.header().weak_count()
+    if !self.is_dangling() {
+      // SAFETY: we just checked that this weak is not dangling
+      let header = unsafe { self.header() };
+      if header.strong_count() > 0 {
+        header.weak_count() - 1 // subtract implicit weak held by strongs
+      } else {
+        0
+      }
+    } else {
+      0
+    }
   }
   
-  // NOTE: WeakSrc could technically support len(), is_empty(), clone_slice(), and clone_root() but I'm not sure it makes sense to; for now, I'm skipping it, but if it becomes important later I may recant
+}
+
+impl<T: SrcSlice + ?Sized> WeakSrc<T> {
+  
+  #[inline]
+  pub fn len(&self) -> usize {
+    self.len
+  }
+  
+  #[inline]
+  pub fn is_empty(&self) -> bool {
+    self.len == 0
+  }
+  
+  pub fn into_root(self) -> WeakSrc<T> {
+    if self.is_dangling() {
+      return WeakSrc::dangling()
+    }
+    // SAFETY: we just checked that this weak is not dangling
+    let header = unsafe { self.header() };
+    // SAFETY:
+    // * all constructor fns for Src and UninitSrc initialize header from InnerHeader::new_inner::<T::Item>; a WeakSrc must be constructed either from a Src, an UninitSrc, or must be dangling; we just checked that this weak is not dangling
+    // * the header is only accessed from InnerHeader::get_header
+    let start = unsafe { InnerHeader::get_body_ptr(self.header) };
+    let this = WeakSrc {
+      header: self.header,
+      start,
+      len: header.len(),
+      _phantom: PhantomData,
+    };
+    forget(self); // don't decrease the weak counter because this is logically the same WeakSrc
+    this
+  }
+  
+  #[inline]
+  pub fn clone_root(&self) -> WeakSrc<T> {
+    self.clone().into_root()
+  }
+  
+  #[inline]
+  pub fn upgrade_root(&self) -> Option<Src<T>> {
+    self.upgrade().map(Src::into_root)
+  }
+  
+  #[inline]
+  pub fn into_slice<I: SrcIndex<T>>(self, index: I) -> WeakSrc<I::Output> {
+    index.get_weak(self)
+  }
+  
+  #[inline]
+  pub fn clone_slice<I: SrcIndex<T>>(&self, index: I) -> WeakSrc<I::Output> {
+    self.clone().into_slice(index)
+  }
+  
+  #[inline]
+  pub fn upgrade_slice<I: SrcIndex<T>>(&self, index: I) -> Option<Src<I::Output>> {
+    self.upgrade().map(move |s| Src::into_slice(s, index))
+  }
+  
+  fn into_item(self, index: usize) -> WeakSrc<T::Item> {
+    assert!(!self.is_dangling(), "cannot slice a dangling WeakSrc");
+    // SAFETY: we just checked that this weak is not dangling
+    let header = unsafe { self.header() };
+    assert!(index < header.len(), "index {index} out of range for slice of length {}", header.len());
+    let start_ptr = unsafe { InnerHeader::get_elem_ptr::<T::Item>(self.header, index) };
+    let this = WeakSrc {
+      header: self.header,
+      start: start_ptr,
+      len: (),
+      _phantom: PhantomData,
+    };
+    forget(self); // don't modify the weak count because this is logically the same WeakSrc
+    this
+  }
+  
+  fn into_slice_from_bounds(self, start: Bound<usize>, end: Bound<usize>) -> WeakSrc<T> {
+    assert!(!self.is_dangling(), "cannot slice a dangling WeakSrc");
+    // SAFETY: we just checked that this weak is not dangling
+    let header = unsafe { self.header() };
+    assert!(header.strong_count() > 0, "cannot slice a WeakSrc whose strong references have been dropped");
+    let start_inc = match start {
+      Bound::Excluded(val) => val + 1,
+      Bound::Included(val) => val,
+      Bound::Unbounded => 0,
+    };
+    let end_exc = match end {
+      Bound::Excluded(val) => val,
+      Bound::Included(val) => val + 1,
+      Bound::Unbounded => header.len(),
+    };
+    assert!(start_inc <= end_exc, "slice index starts at {start_inc} but ends at {end_exc}");
+    assert!(end_exc <= header.len(), "range end index {end_exc} out of range for slice of length {}", header.len());
+    // SAFETY: we just checked that this weak is not dangling and not dropped
+    unsafe { T::validate_range_weak(&self, start_inc..end_exc) };
+    let len = end_exc - start_inc;
+    // SAFETY:
+    // * all constructor fns for Src initialize header from InnerHeader::new_inner::<T::Item>
+    // * the header is only accessed from InnerHeader::get_header
+    // * the assertions verify that start_exc <= end_exc <= header.len
+    let start_ptr = unsafe { InnerHeader::get_elem_ptr::<T::Item>(self.header, start_inc) };
+    let this = WeakSrc {
+      header: self.header,
+      start: start_ptr,
+      len,
+      _phantom: PhantomData,
+    };
+    forget(self); // don't modify the weak count because this is logically the same WeakSrc
+    this
+  }
+  
+  // SAFETY:
+  // requires:
+  // * self is not dangling nor dropped
+  unsafe fn get_slice(&self) -> &[T::Item] {
+    let s = NonNull::slice_from_raw_parts(self.start, self.len);
+    // SAFETY: the safety requirements of this fn combined with the invariants of WeakSrc guarantee that this refers to a properly initialized slice
+    unsafe { s.as_ref() }
+  }
   
 }
 
 impl<T> WeakSrc<T> {
   
   #[inline]
-  pub fn clone_as_slice(&self) -> WeakSrc<[T]> {
-    self.header().inc_weak_count();
-    WeakSrc {
+  pub fn as_slice(self) -> WeakSrc<[T]> {
+    let this = WeakSrc {
       header: self.header,
       start: self.start,
       len: 1,
       _phantom: PhantomData,
-    }
+    };
+    forget(self); // don't modify the weak count because this is logically the same WeakSrc
+    this
+  }
+  
+  #[inline]
+  pub fn clone_as_slice(&self) -> WeakSrc<[T]> {
+    self.clone().as_slice()
+  }
+  
+  #[inline]
+  pub fn upgrade_as_slice(&self) -> Option<Src<[T]>> {
+    self.upgrade().map(Src::as_slice)
   }
   
 }
@@ -533,7 +714,8 @@ impl<T: SrcTarget + ?Sized> Clone for WeakSrc<T> {
   
   fn clone(&self) -> Self {
     if !self.is_dangling() {
-      self.header().inc_weak_count();
+      // SAFETY: we just checked that this weak is not dangling
+      unsafe { self.header() }.inc_weak_count();
     }
     Self {
       header: self.header,
@@ -636,6 +818,11 @@ impl<T: SrcSlice + ?Sized> UninitSrc<T> {
     self.len == 0
   }
   
+  #[inline]
+  pub fn weak_slice<I: SrcIndex<T>>(&self, index: I) -> WeakSrc<I::Output> {
+    self.weak().into_slice(index)
+  }
+  
 }
 
 impl<T> UninitSrc<T> {
@@ -667,6 +854,22 @@ impl<T> UninitSrc<T> {
     };
     forget(self); // don't drop the weak held by the UninitSrc; it logically transfers to the Src
     this
+  }
+  
+  #[inline]
+  pub fn as_slice(self) -> UninitSrc<[T]> {
+    let this = UninitSrc {
+      header: self.header,
+      len: 1,
+      _phantom: PhantomData,
+    };
+    forget(self); // don't modify the weak count because this is logically the same UninitSrc
+    this
+  }
+  
+  #[inline]
+  pub fn weak_as_slice(&self) -> WeakSrc<[T]> {
+    self.weak().as_slice()
   }
   
 }
@@ -785,189 +988,280 @@ impl<T> Drop for PartialInitGuard<T> {
   
 }
 
-pub trait CloneSliceIndex<T: SrcSlice + ?Sized> {
+pub trait SrcIndex<T: SrcSlice + ?Sized> {
   
   type Output: SrcTarget + ?Sized;
   
-  fn clone_get(self, slice: &Src<T>) -> Src<Self::Output>;
+  fn get(self, slice: Src<T>) -> Src<Self::Output>;
+  
+  fn get_weak(self, slice: WeakSrc<T>) -> WeakSrc<Self::Output>;
   
 }
 
-impl<T> CloneSliceIndex<[T]> for usize {
+impl<T> SrcIndex<[T]> for usize {
   
   type Output = T;
   
   #[inline]
-  fn clone_get(self, slice: &Src<[T]>) -> Src<Self::Output> {
-    Src::clone_item(slice, self)
+  fn get(self, slice: Src<[T]>) -> Src<Self::Output> {
+    Src::into_item(slice, self)
+  }
+  
+  #[inline]
+  fn get_weak(self, slice: WeakSrc<[T]>) -> WeakSrc<Self::Output> {
+    WeakSrc::into_item(slice, self)
   }
   
 }
 
-impl<T> CloneSliceIndex<[T]> for (Bound<usize>, Bound<usize>) {
+impl<T> SrcIndex<[T]> for (Bound<usize>, Bound<usize>) {
   
   type Output = [T];
   
   #[inline]
-  fn clone_get(self, slice: &Src<[T]>) -> Src<Self::Output> {
+  fn get(self, slice: Src<[T]>) -> Src<Self::Output> {
     let (start, end) = self;
-    Src::clone_from_bounds(slice, start, end)
+    Src::into_slice_from_bounds(slice, start, end)
   }
   
-}
-
-impl<T> CloneSliceIndex<[T]> for Range<usize> {
-  
-  type Output = [T];
-  
   #[inline]
-  fn clone_get(self, slice: &Src<[T]>) -> Src<Self::Output> {
-    let Range { start, end } = self;
-    Src::clone_from_bounds(slice, Bound::Included(start), Bound::Excluded(end))
-  }
-  
-}
-
-impl<T> CloneSliceIndex<[T]> for RangeFrom<usize> {
-  
-  type Output = [T];
-  
-  #[inline]
-  fn clone_get(self, slice: &Src<[T]>) -> Src<Self::Output> {
-    let RangeFrom { start } = self;
-    Src::clone_from_bounds(slice, Bound::Included(start), Bound::Unbounded)
-  }
-  
-}
-
-impl<T> CloneSliceIndex<[T]> for RangeFull {
-  
-  type Output = [T];
-  
-  #[inline]
-  fn clone_get(self, slice: &Src<[T]>) -> Src<Self::Output> {
-    let RangeFull = self;
-    Src::clone_from_bounds(slice, Bound::Unbounded, Bound::Unbounded)
-  }
-  
-}
-
-impl<T> CloneSliceIndex<[T]> for RangeInclusive<usize> {
-  
-  type Output = [T];
-  
-  #[inline]
-  fn clone_get(self, slice: &Src<[T]>) -> Src<Self::Output> {
-    let (start, end) = self.into_inner();
-    Src::clone_from_bounds(slice, Bound::Included(start), Bound::Included(end))
-  }
-  
-}
-
-impl<T> CloneSliceIndex<[T]> for RangeTo<usize> {
-  
-  type Output = [T];
-  
-  #[inline]
-  fn clone_get(self, slice: &Src<[T]>) -> Src<Self::Output> {
-    let RangeTo { end } = self;
-    Src::clone_from_bounds(slice, Bound::Unbounded, Bound::Excluded(end))
-  }
-  
-}
-
-impl<T> CloneSliceIndex<[T]> for RangeToInclusive<usize> {
-  
-  type Output = [T];
-  
-  #[inline]
-  fn clone_get(self, slice: &Src<[T]>) -> Src<Self::Output> {
-    let RangeToInclusive { end } = self;
-    Src::clone_from_bounds(slice, Bound::Unbounded, Bound::Included(end))
-  }
-  
-}
-
-impl CloneSliceIndex<str> for (Bound<usize>, Bound<usize>) {
-  
-  type Output = str;
-  
-  #[inline]
-  fn clone_get(self, slice: &Src<str>) -> Src<Self::Output> {
+  fn get_weak(self, slice: WeakSrc<[T]>) -> WeakSrc<Self::Output> {
     let (start, end) = self;
-    Src::clone_from_bounds(slice, start, end)
+    WeakSrc::into_slice_from_bounds(slice, start, end)
   }
   
 }
 
-impl CloneSliceIndex<str> for Range<usize> {
+impl<T> SrcIndex<[T]> for Range<usize> {
   
-  type Output = str;
+  type Output = [T];
   
   #[inline]
-  fn clone_get(self, slice: &Src<str>) -> Src<Self::Output> {
+  fn get(self, slice: Src<[T]>) -> Src<Self::Output> {
     let Range { start, end } = self;
-    Src::clone_from_bounds(slice, Bound::Included(start), Bound::Excluded(end))
+    Src::into_slice_from_bounds(slice, Bound::Included(start), Bound::Excluded(end))
+  }
+  
+  #[inline]
+  fn get_weak(self, slice: WeakSrc<[T]>) -> WeakSrc<Self::Output> {
+    let Range { start, end } = self;
+    WeakSrc::into_slice_from_bounds(slice, Bound::Included(start), Bound::Excluded(end))
   }
   
 }
 
-impl CloneSliceIndex<str> for RangeFrom<usize> {
+impl<T> SrcIndex<[T]> for RangeFrom<usize> {
   
-  type Output = str;
+  type Output = [T];
   
   #[inline]
-  fn clone_get(self, slice: &Src<str>) -> Src<Self::Output> {
+  fn get(self, slice: Src<[T]>) -> Src<Self::Output> {
     let RangeFrom { start } = self;
-    Src::clone_from_bounds(slice, Bound::Included(start), Bound::Unbounded)
+    Src::into_slice_from_bounds(slice, Bound::Included(start), Bound::Unbounded)
+  }
+  
+  #[inline]
+  fn get_weak(self, slice: WeakSrc<[T]>) -> WeakSrc<Self::Output> {
+    let RangeFrom { start } = self;
+    WeakSrc::into_slice_from_bounds(slice, Bound::Included(start), Bound::Unbounded)
   }
   
 }
 
-impl CloneSliceIndex<str> for RangeFull {
+impl<T> SrcIndex<[T]> for RangeFull {
   
-  type Output = str;
+  type Output = [T];
   
   #[inline]
-  fn clone_get(self, slice: &Src<str>) -> Src<Self::Output> {
+  fn get(self, slice: Src<[T]>) -> Src<Self::Output> {
     let RangeFull = self;
-    Src::clone_from_bounds(slice, Bound::Unbounded, Bound::Unbounded)
+    Src::into_slice_from_bounds(slice, Bound::Unbounded, Bound::Unbounded)
+  }
+  
+  #[inline]
+  fn get_weak(self, slice: WeakSrc<[T]>) -> WeakSrc<Self::Output> {
+    let RangeFull = self;
+    WeakSrc::into_slice_from_bounds(slice, Bound::Unbounded, Bound::Unbounded)
   }
   
 }
 
-impl CloneSliceIndex<str> for RangeInclusive<usize> {
+impl<T> SrcIndex<[T]> for RangeInclusive<usize> {
   
-  type Output = str;
+  type Output = [T];
   
   #[inline]
-  fn clone_get(self, slice: &Src<str>) -> Src<Self::Output> {
+  fn get(self, slice: Src<[T]>) -> Src<Self::Output> {
     let (start, end) = self.into_inner();
-    Src::clone_from_bounds(slice, Bound::Included(start), Bound::Included(end))
+    Src::into_slice_from_bounds(slice, Bound::Included(start), Bound::Included(end))
+  }
+  
+  #[inline]
+  fn get_weak(self, slice: WeakSrc<[T]>) -> WeakSrc<Self::Output> {
+    let (start, end) = self.into_inner();
+    WeakSrc::into_slice_from_bounds(slice, Bound::Included(start), Bound::Included(end))
   }
   
 }
 
-impl CloneSliceIndex<str> for RangeTo<usize> {
+impl<T> SrcIndex<[T]> for RangeTo<usize> {
   
-  type Output = str;
+  type Output = [T];
   
   #[inline]
-  fn clone_get(self, slice: &Src<str>) -> Src<Self::Output> {
+  fn get(self, slice: Src<[T]>) -> Src<Self::Output> {
     let RangeTo { end } = self;
-    Src::clone_from_bounds(slice, Bound::Unbounded, Bound::Excluded(end))
+    Src::into_slice_from_bounds(slice, Bound::Unbounded, Bound::Excluded(end))
+  }
+  
+  #[inline]
+  fn get_weak(self, slice: WeakSrc<[T]>) -> WeakSrc<Self::Output> {
+    let RangeTo { end } = self;
+    WeakSrc::into_slice_from_bounds(slice, Bound::Unbounded, Bound::Excluded(end))
   }
   
 }
 
-impl CloneSliceIndex<str> for RangeToInclusive<usize> {
+impl<T> SrcIndex<[T]> for RangeToInclusive<usize> {
+  
+  type Output = [T];
+  
+  #[inline]
+  fn get(self, slice: Src<[T]>) -> Src<Self::Output> {
+    let RangeToInclusive { end } = self;
+    Src::into_slice_from_bounds(slice, Bound::Unbounded, Bound::Included(end))
+  }
+  
+  #[inline]
+  fn get_weak(self, slice: WeakSrc<[T]>) -> WeakSrc<Self::Output> {
+    let RangeToInclusive { end } = self;
+    WeakSrc::into_slice_from_bounds(slice, Bound::Unbounded, Bound::Included(end))
+  }
+  
+}
+
+impl SrcIndex<str> for (Bound<usize>, Bound<usize>) {
   
   type Output = str;
   
   #[inline]
-  fn clone_get(self, slice: &Src<str>) -> Src<Self::Output> {
+  fn get(self, slice: Src<str>) -> Src<Self::Output> {
+    let (start, end) = self;
+    Src::into_slice_from_bounds(slice, start, end)
+  }
+  
+  #[inline]
+  fn get_weak(self, slice: WeakSrc<str>) -> WeakSrc<Self::Output> {
+    let (start, end) = self;
+    WeakSrc::into_slice_from_bounds(slice, start, end)
+  }
+  
+}
+
+impl SrcIndex<str> for Range<usize> {
+  
+  type Output = str;
+  
+  #[inline]
+  fn get(self, slice: Src<str>) -> Src<Self::Output> {
+    let Range { start, end } = self;
+    Src::into_slice_from_bounds(slice, Bound::Included(start), Bound::Excluded(end))
+  }
+  
+  #[inline]
+  fn get_weak(self, slice: WeakSrc<str>) -> WeakSrc<Self::Output> {
+    let Range { start, end } = self;
+    WeakSrc::into_slice_from_bounds(slice, Bound::Included(start), Bound::Excluded(end))
+  }
+  
+}
+
+impl SrcIndex<str> for RangeFrom<usize> {
+  
+  type Output = str;
+  
+  #[inline]
+  fn get(self, slice: Src<str>) -> Src<Self::Output> {
+    let RangeFrom { start } = self;
+    Src::into_slice_from_bounds(slice, Bound::Included(start), Bound::Unbounded)
+  }
+  
+  #[inline]
+  fn get_weak(self, slice: WeakSrc<str>) -> WeakSrc<Self::Output> {
+    let RangeFrom { start } = self;
+    WeakSrc::into_slice_from_bounds(slice, Bound::Included(start), Bound::Unbounded)
+  }
+  
+}
+
+impl SrcIndex<str> for RangeFull {
+  
+  type Output = str;
+  
+  #[inline]
+  fn get(self, slice: Src<str>) -> Src<Self::Output> {
+    let RangeFull = self;
+    Src::into_slice_from_bounds(slice, Bound::Unbounded, Bound::Unbounded)
+  }
+  
+  #[inline]
+  fn get_weak(self, slice: WeakSrc<str>) -> WeakSrc<Self::Output> {
+    let RangeFull = self;
+    WeakSrc::into_slice_from_bounds(slice, Bound::Unbounded, Bound::Unbounded)
+  }
+  
+}
+
+impl SrcIndex<str> for RangeInclusive<usize> {
+  
+  type Output = str;
+  
+  #[inline]
+  fn get(self, slice: Src<str>) -> Src<Self::Output> {
+    let (start, end) = self.into_inner();
+    Src::into_slice_from_bounds(slice, Bound::Included(start), Bound::Included(end))
+  }
+  
+  #[inline]
+  fn get_weak(self, slice: WeakSrc<str>) -> WeakSrc<Self::Output> {
+    let (start, end) = self.into_inner();
+    WeakSrc::into_slice_from_bounds(slice, Bound::Included(start), Bound::Included(end))
+  }
+  
+}
+
+impl SrcIndex<str> for RangeTo<usize> {
+  
+  type Output = str;
+  
+  #[inline]
+  fn get(self, slice: Src<str>) -> Src<Self::Output> {
+    let RangeTo { end } = self;
+    Src::into_slice_from_bounds(slice, Bound::Unbounded, Bound::Excluded(end))
+  }
+  
+  #[inline]
+  fn get_weak(self, slice: WeakSrc<str>) -> WeakSrc<Self::Output> {
+    let RangeTo { end } = self;
+    WeakSrc::into_slice_from_bounds(slice, Bound::Unbounded, Bound::Excluded(end))
+  }
+  
+}
+
+impl SrcIndex<str> for RangeToInclusive<usize> {
+  
+  type Output = str;
+  
+  #[inline]
+  fn get(self, slice: Src<str>) -> Src<Self::Output> {
     let RangeToInclusive { end } = self;
-    Src::clone_from_bounds(slice, Bound::Unbounded, Bound::Included(end))
+    Src::into_slice_from_bounds(slice, Bound::Unbounded, Bound::Included(end))
+  }
+  
+  #[inline]
+  fn get_weak(self, slice: WeakSrc<str>) -> WeakSrc<Self::Output> {
+    let RangeToInclusive { end } = self;
+    WeakSrc::into_slice_from_bounds(slice, Bound::Unbounded, Bound::Included(end))
   }
   
 }
@@ -1036,7 +1330,10 @@ impl<T> SrcSlice for [T] {}
 impl<T> sealed::SrcSlice for [T] {
   
   #[inline]
-  fn validate_indices(_this: &Src<Self>, _start_inc: usize, _end_exc: usize) {}
+  fn validate_range(_this: &Src<Self>, _range: Range<usize>) {}
+  
+  #[inline]
+  unsafe fn validate_range_weak(_this: &WeakSrc<Self>, _range: Range<usize>) {}
   
 }
 
@@ -1044,14 +1341,28 @@ impl SrcSlice for str {}
 
 impl sealed::SrcSlice for str {
   
-  fn validate_indices(this: &Src<Self>, start_inc: usize, end_exc: usize) {
+  fn validate_range(this: &Src<Self>, range: Range<usize>) {
     let s: &str = &**this;
-    let _ = s[start_inc..end_exc]; // construct the slice just to trigger the appropriate errors if these indices are not at char boundaries
+    let _ = s[range]; // construct the slice just to trigger the appropriate errors if these indices are not at char boundaries
+  }
+  
+  // SAFETY:
+  // requires:
+  // * that this is not dangling nor dropped
+  unsafe fn validate_range_weak(this: &crate::WeakSrc<Self>, range: Range<usize>) where Self: crate::SrcSlice {
+    // SAFETY:
+    // * safety requirements passed onto the caller
+    let s: &[u8] = unsafe { this.get_slice() };
+    // SAFETY: all constructor fns of WeakSrc<str> guarantee the contents are UTF-8
+    let s: &str = unsafe { str::from_utf8_unchecked(s) };
+    let _ = s[range];
   }
   
 }
 
 mod sealed {
+  
+  use std::ops::Range;
   
   pub trait SrcTarget {
     
@@ -1065,7 +1376,12 @@ mod sealed {
   
   pub trait SrcSlice: SrcTarget<Len = usize> {
     
-    fn validate_indices(this: &super::Src<Self>, start_inc: usize, end_exc: usize) where Self: super::SrcSlice;
+    fn validate_range(this: &super::Src<Self>, range: Range<usize>) where Self: super::SrcSlice;
+    
+    // SAFETY:
+    // requires:
+    // * that this is not dangling nor dropped
+    unsafe fn validate_range_weak(this: &super::WeakSrc<Self>, range: Range<usize>) where Self: super::SrcSlice;
     
   }
   
