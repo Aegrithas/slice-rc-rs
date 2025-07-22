@@ -171,15 +171,11 @@ impl InnerHeader {
   }
   
   pub fn strong_count(&self) -> usize {
-    let strong_count = &self.strong_count;
-    debug_assert!(strong_count.get() < usize::MAX, "tried to make too many (2^{}) strong references", usize::BITS);
-    strong_count.get()
+    self.strong_count.get()
   }
   
   pub fn weak_count(&self) -> usize {
-    let weak_count = &self.weak_count;
-    debug_assert!(weak_count.get() < usize::MAX, "tried to make too many (2^{}) weak references", usize::BITS);
-    weak_count.get()
+    self.weak_count.get()
   }
   
   pub fn inc_strong_count(&self) {
