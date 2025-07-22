@@ -1,4 +1,4 @@
-use std::{alloc::{alloc, dealloc, handle_alloc_error, Layout, LayoutError}, cell::Cell, ptr::NonNull};
+use std::{alloc::{alloc, alloc_zeroed, dealloc, handle_alloc_error, Layout, LayoutError}, cell::Cell, ptr::NonNull};
 
 // NOTE: this should not need to be dropped; `Layout` and `usize` are `Copy`, so drop doesn't matter; `Cell<T>` should only need to be dropped if `T` does
 pub struct InnerHeader {
@@ -20,12 +20,12 @@ impl InnerHeader {
   
   // SAFETY:
   // various static methods on InnerHeader offer access to the contents; nothing else is guaranteed to be sound
-  pub fn new_inner<T>(len: usize, init_strong_count: usize) -> NonNull<InnerHeader> {
+  pub fn new_inner<T, A: AllocFlavor>(len: usize, init_strong_count: usize) -> NonNull<InnerHeader> {
     let Ok((layout, body_offset)) = Self::inner_layout::<T>(len) else {
       panic!("length overflow")
     };
     // SAFETY: layout is guaranteed to be non-zero because it contains an `InnerHeader`
-    let ptr = unsafe { alloc(layout) }.cast();
+    let ptr = unsafe { A::alloc(layout) }.cast();
     let Some(ptr) = NonNull::new(ptr) else {
       handle_alloc_error(layout)
     };
@@ -204,6 +204,46 @@ impl InnerHeader {
     let weak_count = &self.weak_count;
     debug_assert!(weak_count.get() > 0, "tried remove a non-existant strong_count");
     weak_count.set(weak_count.get().wrapping_add(1));
+  }
+  
+}
+
+pub trait AllocFlavor {
+  
+  // SAFETY:
+  // requires:
+  // * same as std::alloc::alloc and std::alloc::alloc_zeroed (layout must be nonzero)
+  // guarantees:
+  // * allocated memory may or may not be initialized (negative guarantee; instantiations may be more specific)
+  unsafe fn alloc(layout: Layout) -> *mut u8;
+  
+}
+
+#[derive(Copy, Clone, Debug)]
+pub struct Alloc;
+
+impl AllocFlavor for Alloc {
+  
+  #[inline]
+  unsafe fn alloc(layout: Layout) -> *mut u8 {
+    // SAFETY: requirements passed on to the caller
+    unsafe { alloc(layout) }
+  }
+  
+}
+
+#[derive(Copy, Clone, Debug)]
+pub struct AllocZeroed;
+
+impl AllocFlavor for AllocZeroed {
+  
+  // SAFETY:
+  // guarantees:
+  // * allocated memory is initialized with all zeroes
+  #[inline]
+  unsafe fn alloc(layout: Layout) -> *mut u8 {
+    // SAFETY: requirements passed on to the caller
+    unsafe { alloc_zeroed(layout) }
   }
   
 }

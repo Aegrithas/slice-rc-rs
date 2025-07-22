@@ -1,6 +1,6 @@
 mod inner;
 
-use std::{borrow::Borrow, cmp::Ordering, fmt::{self, Debug, Formatter, Pointer}, hash::{Hash, Hasher}, marker::PhantomData, mem::forget, ops::{Bound, Deref, Index, Range, RangeFrom, RangeFull, RangeInclusive, RangeTo, RangeToInclusive}, ptr::{without_provenance_mut, NonNull}, slice, str::Utf8Error, usize};
+use std::{borrow::Borrow, cmp::Ordering, fmt::{self, Debug, Formatter, Pointer}, hash::{Hash, Hasher}, marker::PhantomData, mem::{forget, MaybeUninit}, ops::{Bound, Deref, Index, Range, RangeFrom, RangeFull, RangeInclusive, RangeTo, RangeToInclusive}, ptr::{without_provenance_mut, NonNull}, slice, str::Utf8Error, usize};
 
 use inner::*;
 
@@ -170,6 +170,30 @@ impl<T> Src<T> {
   }
   
   #[inline]
+  pub fn single_uninit() -> Src<MaybeUninit<T>> {
+    let Src { header, start, len, _phantom } = Src::<[T]>::new_uninit(1);
+    debug_assert_eq!(len, 1);
+    Src {
+      header,
+      start,
+      len: (),
+      _phantom: PhantomData,
+    }
+  }
+  
+  #[inline]
+  pub fn single_zeroed() -> Src<MaybeUninit<T>> {
+    let Src { header, start, len, _phantom } = Src::<[T]>::new_zeroed(1);
+    debug_assert_eq!(len, 1);
+    Src {
+      header,
+      start,
+      len: (),
+      _phantom: PhantomData,
+    }
+  }
+  
+  #[inline]
   pub fn as_slice(this: Src<T>) -> Src<[T]> {
     let _this = Src {
       header: this.header,
@@ -195,6 +219,34 @@ impl<T> Src<T> {
 
 impl<T> Src<[T]> {
   
+  pub fn new_uninit(len: usize) -> Src<[MaybeUninit<T>]> {
+    let header = InnerHeader::new_inner::<T, Alloc>(len, 1);
+    // SAFETY:
+    // * we just got this from InnerHeader::new_inner::<T>
+    // * no one else has seen the ptr yet, so the read/write requirements are fine
+    let start = unsafe { InnerHeader::get_body_ptr::<T>(header) }.cast();
+    Src {
+      header,
+      start,
+      len,
+      _phantom: PhantomData,
+    }
+  }
+  
+  pub fn new_zeroed(len: usize) -> Src<[MaybeUninit<T>]> {
+    let header = InnerHeader::new_inner::<T, AllocZeroed>(len, 1);
+    // SAFETY:
+    // * we just got this from InnerHeader::new_inner::<T>
+    // * no one else has seen the ptr yet, so the read/write requirements are fine
+    let start = unsafe { InnerHeader::get_body_ptr::<T>(header) }.cast();
+    Src {
+      header,
+      start,
+      len,
+      _phantom: PhantomData,
+    }
+  }
+  
   #[inline]
   pub fn from_fn<F: FnMut(usize) -> T>(len: usize, f: F) -> Src<[T]> {
     UninitSrc::new(len).init_from_fn(f)
@@ -213,7 +265,7 @@ impl<T> Src<[T]> {
   
   #[inline]
   pub fn from_array<const N: usize>(values: [T; N]) -> Src<[T]> {
-    let header = InnerHeader::new_inner::<T>(N, 1);
+    let header = InnerHeader::new_inner::<T, Alloc>(N, 1);
     // SAFETY:
     // * we just got this from InnerHeader::new_inner::<T>
     // * no one else has seen the ptr yet, so the read/write requirements are fine
@@ -249,7 +301,7 @@ impl<T> Src<[T]> {
   #[inline]
   pub fn copy_from_slice(values: &[T]) -> Src<[T]> where T: Copy {
     let len = values.len();
-    let header = InnerHeader::new_inner::<T>(len, 1);
+    let header = InnerHeader::new_inner::<T, Alloc>(len, 1);
     // SAFETY:
     // * we just got this from InnerHeader::new_inner::<T>
     // * no one else has seen the ptr yet, so the read/write requirements are fine
@@ -264,6 +316,40 @@ impl<T> Src<[T]> {
     Self {
       header,
       start,
+      len,
+      _phantom: PhantomData,
+    }
+  }
+  
+}
+
+impl<T> Src<MaybeUninit<T>> {
+  
+  // SAFETY:
+  // requires:
+  // * As with MaybeUninit::assume_init, it is up to the caller to guarantee that the inner value really is in an initialized state. Calling this when the content is not yet fully initialized causes immediate undefined behavior.
+  pub unsafe fn assume_init(self) -> Src<T> {
+    let Src { header, start, len, _phantom } = self;
+    Src {
+      header,
+      start: start.cast(),
+      len,
+      _phantom: PhantomData,
+    }
+  }
+  
+}
+
+impl<T> Src<[MaybeUninit<T>]> {
+  
+  // SAFETY:
+  // requires:
+  // * As with MaybeUninit::assume_init, it is up to the caller to guarantee that the inner value really is in an initialized state. Calling this when the content is not yet fully initialized causes immediate undefined behavior.
+  pub unsafe fn assume_init(self) -> Src<[T]> {
+    let Src { header, start, len, _phantom } = self;
+    Src {
+      header,
+      start: start.cast(),
       len,
       _phantom: PhantomData,
     }
@@ -882,7 +968,7 @@ impl<T> UninitSrc<[T]> {
   // this is placed here for simplicity
   #[inline]
   pub fn new(len: usize) -> UninitSrc<[T]> {
-    let header = InnerHeader::new_inner::<T>(len, 0);
+    let header = InnerHeader::new_inner::<T, Alloc>(len, 0);
     Self {
       header,
       len,
