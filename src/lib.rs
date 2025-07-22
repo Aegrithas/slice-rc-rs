@@ -254,7 +254,7 @@ impl<T> Src<[T]> {
   
   pub fn cyclic_from_fn<F: FnMut(&WeakSrc<[T]>, usize) -> T>(len: usize, mut f: F) -> Src<[T]> {
     let this = UninitSrc::new(len);
-    let weak = this.weak();
+    let weak = this.downgrade();
     this.init_from_fn(|i| f(&weak, i))
   }
   
