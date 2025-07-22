@@ -870,7 +870,7 @@ impl<T: SrcTarget + ?Sized> UninitSrc<T> {
     unsafe { InnerHeader::get_header(self.header) }
   }
   
-  pub fn weak(&self) -> WeakSrc<T> {
+  pub fn downgrade(&self) -> WeakSrc<T> {
     // safety note: the strong count is 0 until this UninitSrc is initialized into a Src, so the WeakSrc will never read or write from the body during the lifetime of the UninitSrc
     self.header().inc_weak_count();
     // SAFETY:
@@ -905,8 +905,8 @@ impl<T: SrcSlice + ?Sized> UninitSrc<T> {
   }
   
   #[inline]
-  pub fn weak_slice<I: SrcIndex<T>>(&self, index: I) -> WeakSrc<I::Output> {
-    self.weak().into_slice(index)
+  pub fn downgrade_slice<I: SrcIndex<T>>(&self, index: I) -> WeakSrc<I::Output> {
+    self.downgrade().into_slice(index)
   }
   
 }
@@ -954,8 +954,8 @@ impl<T> UninitSrc<T> {
   }
   
   #[inline]
-  pub fn weak_as_slice(&self) -> WeakSrc<[T]> {
-    self.weak().as_slice()
+  pub fn downgrade_as_slice(&self) -> WeakSrc<[T]> {
+    self.downgrade().as_slice()
   }
   
 }
