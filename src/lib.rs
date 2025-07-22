@@ -885,11 +885,6 @@ impl<T: SrcTarget + ?Sized> UninitSrc<T> {
     }
   }
   
-  #[inline]
-  pub fn weak_count(&self) -> usize {
-    self.header().weak_count()
-  }
-  
 }
 
 impl<T: SrcSlice + ?Sized> UninitSrc<T> {
