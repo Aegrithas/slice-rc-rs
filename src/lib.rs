@@ -1,6 +1,6 @@
 mod inner;
 
-use std::{borrow::Borrow, cmp::Ordering, fmt::{self, Debug, Formatter, Pointer}, hash::{Hash, Hasher}, marker::PhantomData, mem::{forget, MaybeUninit}, ops::{Bound, Deref, Index, Range, RangeFrom, RangeFull, RangeInclusive, RangeTo, RangeToInclusive}, ptr::{without_provenance_mut, NonNull}, slice, str::Utf8Error, usize};
+use std::{borrow::{Borrow, BorrowMut}, cmp::Ordering, fmt::{self, Debug, Formatter, Pointer}, hash::{Hash, Hasher}, marker::PhantomData, mem::{forget, MaybeUninit}, ops::{Bound, Deref, DerefMut, Index, IndexMut, Range, RangeFrom, RangeFull, RangeInclusive, RangeTo, RangeToInclusive}, ptr::{without_provenance_mut, NonNull}, slice, str::Utf8Error, usize};
 
 use inner::*;
 
@@ -57,6 +57,30 @@ impl<T: SrcTarget + ?Sized> Src<T> {
   
   pub fn weak_count(this: &Src<T>) -> usize {
     this.header().weak_count()
+  }
+  
+  pub fn into_unique(this: Src<T>) -> Result<UniqueSrc<T>, Src<T>> {
+    let header = this.header();
+    if header.strong_count() == 1 {
+      // decrease the strong count to 0, but don't drop;
+      // obviously, the UniqueSrc still needs the body to exist, so it shouldn't be dropped,
+      // but the strong count should be 0 so that the weak references can't upgrade (because that Src would be an alias of the UniqueSrc, which violates UniqueSrc's invariant)
+      header.dec_strong_count();
+      let this2 = UniqueSrc {
+        header: this.header,
+        start: this.start,
+        len: this.len,
+        _phantom: PhantomData,
+      };
+      forget(this); // as stated above, don't drop; additionally, now that the strong count has already been set to 0, dropping this would actually cause a panic on debug and probably big problems on release because it would cause integer overflow
+      Ok(this2)
+    } else {
+      Err(this)
+    }
+  }
+  
+  pub fn make_unique(this: Src<T>) -> UniqueSrc<T> where T::Item: Clone {
+    Src::into_unique(this).unwrap_or_else(|this| T::new_unique_from_clone(&*this))
   }
   
 }
@@ -219,32 +243,14 @@ impl<T> Src<T> {
 
 impl<T> Src<[T]> {
   
+  #[inline]
   pub fn new_uninit(len: usize) -> Src<[MaybeUninit<T>]> {
-    let header = InnerHeader::new_inner::<T, Alloc>(len, 1);
-    // SAFETY:
-    // * we just got this from InnerHeader::new_inner::<T>
-    // * no one else has seen the ptr yet, so the read/write requirements are fine
-    let start = unsafe { InnerHeader::get_body_ptr::<T>(header) }.cast();
-    Src {
-      header,
-      start,
-      len,
-      _phantom: PhantomData,
-    }
+    UniqueSrc::into_src(UniqueSrc::new_uninit(len))
   }
   
+  #[inline]
   pub fn new_zeroed(len: usize) -> Src<[MaybeUninit<T>]> {
-    let header = InnerHeader::new_inner::<T, AllocZeroed>(len, 1);
-    // SAFETY:
-    // * we just got this from InnerHeader::new_inner::<T>
-    // * no one else has seen the ptr yet, so the read/write requirements are fine
-    let start = unsafe { InnerHeader::get_body_ptr::<T>(header) }.cast();
-    Src {
-      header,
-      start,
-      len,
-      _phantom: PhantomData,
-    }
+    UniqueSrc::into_src(UniqueSrc::new_zeroed(len))
   }
   
   #[inline]
@@ -265,19 +271,7 @@ impl<T> Src<[T]> {
   
   #[inline]
   pub fn from_array<const N: usize>(values: [T; N]) -> Src<[T]> {
-    let header = InnerHeader::new_inner::<T, Alloc>(N, 1);
-    // SAFETY:
-    // * we just got this from InnerHeader::new_inner::<T>
-    // * no one else has seen the ptr yet, so the read/write requirements are fine
-    let start = unsafe { InnerHeader::get_body_ptr::<T>(header) };
-    // SAFETY: no one else has seen the body, so write is fine; InnerHeader::new_inner::<T>(N) guarantees N elements, so we definitely have room for [T; N]
-    unsafe { start.cast().write(values) };
-    Self {
-      header,
-      start,
-      len: N,
-      _phantom: PhantomData,
-    }
+    UniqueSrc::into_src(UniqueSrc::from_array(values))
   }
   
   #[inline]
@@ -292,42 +286,19 @@ impl<T> Src<[T]> {
   
   #[inline]
   pub fn clone_from_slice(values: &[T]) -> Src<[T]> where T: Clone {
-    Self::from_fn(values.len(), |i| {
-      // SAFETY: i ranges from 0..len==src.len()
-      unsafe { values.get_unchecked(i) }.clone()
-    })
+    UniqueSrc::into_src(UniqueSrc::clone_from_slice(values))
   }
   
   #[inline]
   pub fn copy_from_slice(values: &[T]) -> Src<[T]> where T: Copy {
-    let len = values.len();
-    let header = InnerHeader::new_inner::<T, Alloc>(len, 1);
-    // SAFETY:
-    // * we just got this from InnerHeader::new_inner::<T>
-    // * no one else has seen the ptr yet, so the read/write requirements are fine
-    let start = unsafe { InnerHeader::get_body_ptr::<T>(header) };
-    // SAFETY: references can't be null
-    let values = unsafe { NonNull::new_unchecked(values.as_ptr().cast_mut()) };
-    // SAFETY:
-    // * values is from a reference, and is therefore valid
-    // * InnerHeader::new_inner::<T>(len) guarantees that start is valid for len * size_of::<T>() bytes and aligned for T
-    // * start just came from a new allocation, and therefore doesn't overlap with a slice that was passed into this function
-    unsafe { values.copy_to_nonoverlapping(start, len); }
-    Self {
-      header,
-      start,
-      len,
-      _phantom: PhantomData,
-    }
+    UniqueSrc::into_src(UniqueSrc::copy_from_slice(values))
   }
   
 }
 
 impl<T> Src<MaybeUninit<T>> {
   
-  // SAFETY:
-  // requires:
-  // * As with MaybeUninit::assume_init, it is up to the caller to guarantee that the inner value really is in an initialized state. Calling this when the content is not yet fully initialized causes immediate undefined behavior.
+  // SAFETY: As with MaybeUninit::assume_init, it is up to the caller to guarantee that the inner value really is in an initialized state. Calling this when the content is not yet fully initialized causes immediate undefined behavior.
   pub unsafe fn assume_init(self) -> Src<T> {
     let Src { header, start, len, _phantom } = self;
     Src {
@@ -342,9 +313,7 @@ impl<T> Src<MaybeUninit<T>> {
 
 impl<T> Src<[MaybeUninit<T>]> {
   
-  // SAFETY:
-  // requires:
-  // * As with MaybeUninit::assume_init, it is up to the caller to guarantee that the inner value really is in an initialized state. Calling this when the content is not yet fully initialized causes immediate undefined behavior.
+  // SAFETY: As with MaybeUninit::assume_init, it is up to the caller to guarantee that the inner value really is in an initialized state. Calling this when the content is not yet fully initialized causes immediate undefined behavior.
   pub unsafe fn assume_init(self) -> Src<[T]> {
     let Src { header, start, len, _phantom } = self;
     Src {
@@ -541,7 +510,8 @@ impl<T: SrcTarget + ?Sized> Drop for Src<T> {
     // * all constructor fns for Src initialize header from InnerHeader::new_inner::<T::Item>
     // * all constructor fns for Src initialize the elements
     // * the header is only accessed from InnerHeader::get_header
-    // * this is the only callsite for InnerHeader::drop_strong::<T::Item>; therefore, this will be the last strong reference iff this is the last Src with access to this allocation's body
+    // * this is one of two callsites for InnerHeader::drop_strong::<T::Item>, the other being UniqueSrc::drop;
+    //   as a UniqueSrc cannot co-exist (for the same allocation) with an Src, this will be the last strong reference iff this is the last Src with access to this allocation's body
     unsafe { InnerHeader::drop_strong::<T::Item>(self.header); }
   }
   
@@ -919,15 +889,19 @@ impl<T> UninitSrc<T> {
     }
   }
   
+  #[inline]
   pub fn init(self, value: T) -> Src<T> {
+    UniqueSrc::into_src(self.init_unique(value))
+  }
+  
+  pub fn init_unique(self, value: T) -> UniqueSrc<T> {
     // SAFETY:
     // * all constructor fns for UninitSrc<T> initialize self.header from InnerHeader::new_inner::<T>
     // * the header is only accessed from InnerHeader::get_header
     let start = unsafe { InnerHeader::get_body_ptr::<T>(self.header) };
     // SAFETY: no one else has seen the body of the allocation (because the weaks only look at the header after the strong count has been initialized), so this write is okay
     unsafe { start.write(value); }
-    self.header().inc_strong_count();
-    let this = Src {
+    let this = UniqueSrc {
       header: self.header,
       start,
       len: self.len,
@@ -971,7 +945,12 @@ impl<T> UninitSrc<[T]> {
     }
   }
   
-  pub fn init_from_fn<F: FnMut(usize) -> T>(self, mut f: F) -> Src<[T]> {
+  #[inline]
+  pub fn init_from_fn<F: FnMut(usize) -> T>(self, f: F) -> Src<[T]> {
+    UniqueSrc::into_src(self.init_unique_from_fn(f))
+  }
+  
+  pub fn init_unique_from_fn<F: FnMut(usize) -> T>(self, mut f: F) -> UniqueSrc<[T]> {
     let header = self.header();
     // SAFETY:
     // * all constructor fns for UninitSrc<T> initialize self.header from InnerHeader::new_inner::<T>
@@ -990,8 +969,7 @@ impl<T> UninitSrc<[T]> {
     }
     // if all elements are successfully initialized, then forget the drop guard; in other words, the guard only drops the contents if a panic occurs part way through initialization
     forget(guard);
-    header.inc_strong_count();
-    let this = Src {
+    let this = UniqueSrc {
       header: self.header,
       start,
       len: self.len,
@@ -1007,8 +985,18 @@ impl<T> UninitSrc<[T]> {
   }
   
   #[inline]
+  pub fn init_unique_from_default(self) -> UniqueSrc<[T]> where T: Default {
+    self.init_unique_from_fn(|_| T::default())
+  }
+  
+  #[inline]
   pub fn init_filled(self, value: &T) -> Src<[T]> where T: Clone {
     self.init_from_fn(|_| value.clone())
+  }
+  
+  #[inline]
+  pub fn init_unique_filled(self, value: &T) -> UniqueSrc<[T]> where T: Clone {
+    self.init_unique_from_fn(|_| value.clone())
   }
   
 }
@@ -1065,6 +1053,457 @@ impl<T> Drop for PartialInitGuard<T> {
     // * the header is only accessed from InnerHeader::get_header
     // * by the contract of this type, self.header is from an initialization fn from UninitSrc that is panicking; therefore, no one else has seen or will see the body
     unsafe { InnerHeader::drop_body_up_to::<T>(self.header, self.initialized); }
+  }
+  
+}
+
+pub struct UniqueSrc<T: SrcTarget + ?Sized> {
+  
+  header: NonNull<InnerHeader>,
+  start: NonNull<T::Item>,
+  len: T::Len,
+  _phantom: PhantomData<*const T>,
+  
+}
+
+impl<T: SrcTarget + ?Sized> UniqueSrc<T> {
+  
+  fn header(&self) -> &InnerHeader {
+    // SAFETY:
+    // * all constructor fns for Src initialize header from InnerHeader::new_inner::<T::Item>
+    // * the header is only accessed from InnerHeader::get_header
+    unsafe { InnerHeader::get_header(self.header) }
+  }
+  
+  pub fn downgrade(this: &UniqueSrc<T>) -> WeakSrc<T> {
+    // safety note: the strong count is 0 until this UniqueSrc is turned into a Src, so the WeakSrc will never read or write from the body during the lifetime of the UniqueSrc
+    this.header().inc_weak_count();
+    WeakSrc {
+      header: this.header,
+      start: this.start,
+      len: this.len,
+      _phantom: PhantomData,
+    }
+  }
+  
+  pub fn into_src(this: UniqueSrc<T>) -> Src<T> {
+    let UniqueSrc { header, start, len, _phantom } = this;
+    this.header().inc_strong_count();
+    let this2 = Src { header, start, len, _phantom: PhantomData };
+    forget(this);
+    this2
+  }
+  
+}
+
+impl<T: SrcSlice + ?Sized> UniqueSrc<T> {
+  
+  #[inline]
+  pub fn len(&self) -> usize {
+    self.len
+  }
+  
+  #[inline]
+  pub fn is_empty(&self) -> bool {
+    self.len == 0
+  }
+  
+  #[inline]
+  pub fn downgrade_slice<I: SrcIndex<T>>(&self, index: I) -> WeakSrc<I::Output> {
+    UniqueSrc::downgrade(&self).into_slice(index)
+  }
+  
+}
+
+impl<T> UniqueSrc<T> {
+  
+  #[inline]
+  pub fn single(value: T) -> UniqueSrc<T> {
+    UninitSrc::single().init_unique(value)
+  }
+  
+  #[inline]
+  pub fn single_uninit() -> UniqueSrc<MaybeUninit<T>> {
+    let UniqueSrc { header, start, len, _phantom } = UniqueSrc::<[T]>::new_uninit(1);
+    debug_assert_eq!(len, 1);
+    UniqueSrc {
+      header,
+      start,
+      len: (),
+      _phantom: PhantomData,
+    }
+  }
+  
+  #[inline]
+  pub fn single_zeroed() -> UniqueSrc<MaybeUninit<T>> {
+    let UniqueSrc { header, start, len, _phantom } = UniqueSrc::<[T]>::new_zeroed(1);
+    debug_assert_eq!(len, 1);
+    UniqueSrc {
+      header,
+      start,
+      len: (),
+      _phantom: PhantomData,
+    }
+  }
+  
+  #[inline]
+  pub fn as_slice(this: UniqueSrc<T>) -> UniqueSrc<[T]> {
+    let UniqueSrc { header, start, len: (), _phantom } = this;
+    UniqueSrc { header, start, len: 1, _phantom: PhantomData }
+  }
+  
+  #[inline]
+  pub fn downgrade_as_slice(this: &UniqueSrc<T>) -> WeakSrc<[T]> {
+    UniqueSrc::downgrade(this).as_slice()
+  }
+  
+}
+
+impl<T> UniqueSrc<[T]> {
+  
+  pub fn new_uninit(len: usize) -> UniqueSrc<[MaybeUninit<T>]> {
+    let header = InnerHeader::new_inner::<T, Alloc>(len, 1);
+    // SAFETY:
+    // * we just got this from InnerHeader::new_inner::<T>
+    // * no one else has seen the ptr yet, so the read/write requirements are fine
+    let start = unsafe { InnerHeader::get_body_ptr::<T>(header) }.cast();
+    UniqueSrc {
+      header,
+      start,
+      len,
+      _phantom: PhantomData,
+    }
+  }
+  
+  pub fn new_zeroed(len: usize) -> UniqueSrc<[MaybeUninit<T>]> {
+    let header = InnerHeader::new_inner::<T, AllocZeroed>(len, 1);
+    // SAFETY:
+    // * we just got this from InnerHeader::new_inner::<T>
+    // * no one else has seen the ptr yet, so the read/write requirements are fine
+    let start = unsafe { InnerHeader::get_body_ptr::<T>(header) }.cast();
+    UniqueSrc {
+      header,
+      start,
+      len,
+      _phantom: PhantomData,
+    }
+  }
+  
+  #[inline]
+  pub fn from_fn<F: FnMut(usize) -> T>(len: usize, f: F) -> UniqueSrc<[T]> {
+    UninitSrc::new(len).init_unique_from_fn(f)
+  }
+  
+  pub fn cyclic_from_fn<F: FnMut(&WeakSrc<[T]>, usize) -> T>(len: usize, mut f: F) -> UniqueSrc<[T]> {
+    let this = UninitSrc::new(len);
+    let weak = this.downgrade();
+    this.init_unique_from_fn(|i| f(&weak, i))
+  }
+  
+  #[inline]
+  pub fn from_iter<I: IntoIterator<Item = T, IntoIter: ExactSizeIterator>>(iter: I) -> UniqueSrc<[T]> {
+    let mut iter = iter.into_iter();
+    UniqueSrc::from_fn(iter.len(), |_| iter.next().unwrap())
+  }
+  
+  pub fn from_array<const N: usize>(values: [T; N]) -> UniqueSrc<[T]> {
+    let header = InnerHeader::new_inner::<T, Alloc>(N, 1);
+    // SAFETY:
+    // * we just got this from InnerHeader::new_inner::<T>
+    // * no one else has seen the ptr yet, so the read/write requirements are fine
+    let start = unsafe { InnerHeader::get_body_ptr::<T>(header) };
+    // SAFETY: no one else has seen the body, so write is fine; InnerHeader::new_inner::<T>(N) guarantees N elements, so we definitely have room for [T; N]
+    unsafe { start.cast().write(values) };
+    UniqueSrc {
+      header,
+      start,
+      len: N,
+      _phantom: PhantomData,
+    }
+  }
+  
+  #[inline]
+  pub fn from_default(len: usize) -> UniqueSrc<[T]> where T: Default {
+    UniqueSrc::from_fn(len, |_| Default::default())
+  }
+  
+  #[inline]
+  pub fn filled(len: usize, value: &T) -> UniqueSrc<[T]> where T: Clone {
+    UniqueSrc::from_fn(len, |_| value.clone())
+  }
+  
+  #[inline]
+  pub fn clone_from_slice(values: &[T]) -> UniqueSrc<[T]> where T: Clone {
+    UniqueSrc::from_fn(values.len(), |i| {
+      // SAFETY: i ranges from 0..len==src.len()
+      unsafe { values.get_unchecked(i) }.clone()
+    })
+  }
+  
+  #[inline]
+  pub fn copy_from_slice(values: &[T]) -> UniqueSrc<[T]> where T: Copy {
+    let len = values.len();
+    let header = InnerHeader::new_inner::<T, Alloc>(len, 1);
+    // SAFETY:
+    // * we just got this from InnerHeader::new_inner::<T>
+    // * no one else has seen the ptr yet, so the read/write requirements are fine
+    let start = unsafe { InnerHeader::get_body_ptr::<T>(header) };
+    // SAFETY: references can't be null
+    let values = unsafe { NonNull::new_unchecked(values.as_ptr().cast_mut()) };
+    // SAFETY:
+    // * values is from a reference, and is therefore valid
+    // * InnerHeader::new_inner::<T>(len) guarantees that start is valid for len * size_of::<T>() bytes and aligned for T
+    // * start just came from a new allocation, and therefore doesn't overlap with a slice that was passed into this function
+    unsafe { values.copy_to_nonoverlapping(start, len); }
+    UniqueSrc {
+      header,
+      start,
+      len,
+      _phantom: PhantomData,
+    }
+  }
+  
+}
+
+impl<T> UniqueSrc<MaybeUninit<T>> {
+  
+  // SAFETY: As with MaybeUninit::assume_init, it is up to the caller to guarantee that the inner value really is in an initialized state. Calling this when the content is not yet fully initialized causes immediate undefined behavior.
+  pub unsafe fn assume_init(self) -> UniqueSrc<T> {
+    let UniqueSrc { header, start, len, _phantom } = self;
+    UniqueSrc {
+      header,
+      start: start.cast(),
+      len,
+      _phantom: PhantomData,
+    }
+  }
+  
+}
+
+impl<T> UniqueSrc<[MaybeUninit<T>]> {
+  
+  // SAFETY: As with MaybeUninit::assume_init, it is up to the caller to guarantee that the inner value really is in an initialized state. Calling this when the content is not yet fully initialized causes immediate undefined behavior.
+  pub unsafe fn assume_init(self) -> UniqueSrc<[T]> {
+    let UniqueSrc { header, start, len, _phantom } = self;
+    UniqueSrc {
+      header,
+      start: start.cast(),
+      len,
+      _phantom: PhantomData,
+    }
+  }
+  
+}
+
+impl UniqueSrc<str> {
+  
+  #[inline]
+  pub fn new(s: impl AsRef<str>) -> UniqueSrc<str> {
+    let s = s.as_ref();
+    let UniqueSrc { header, start, len, _phantom } = UniqueSrc::copy_from_slice(s.as_bytes());
+    UniqueSrc { header, start, len, _phantom: PhantomData }
+  }
+  
+  #[inline]
+  pub fn from_utf8(v: UniqueSrc<[u8]>) -> Result<UniqueSrc<str>, Utf8Error> {
+    let _: &str = <str>::from_utf8(&*v)?;
+    // SAFETY: <str>::from_utf8() guarantees that the contents are UTF-8
+    Ok(unsafe { UniqueSrc::from_utf8_unchecked(v) })
+  }
+  
+  // SAFETY:
+  // The bytes passed in must be valid UTF-8
+  #[inline]
+  pub unsafe fn from_utf8_unchecked(v: UniqueSrc<[u8]>) -> UniqueSrc<str> {
+    let UniqueSrc { header, start, len, _phantom } = v;
+    UniqueSrc { header, start, len, _phantom: PhantomData }
+  }
+  
+  #[inline]
+  pub fn as_bytes(this: UniqueSrc<str>) -> UniqueSrc<[u8]> {
+    let UniqueSrc { header, start, len, _phantom } = this;
+    UniqueSrc { header, start, len, _phantom: PhantomData }
+  }
+  
+}
+
+impl<T: Default> Default for UniqueSrc<T> {
+  
+  #[inline]
+  fn default() -> Self {
+    Self::single(T::default())
+  }
+  
+}
+
+impl<T: SrcTarget + ?Sized> Deref for UniqueSrc<T> {
+  
+  type Target = T;
+  
+  #[inline]
+  fn deref(&self) -> &Self::Target {
+    T::get_unique(self)
+  }
+  
+}
+
+impl<T: SrcTarget + ?Sized> DerefMut for UniqueSrc<T> {
+  
+  #[inline]
+  fn deref_mut(&mut self) -> &mut Self::Target {
+    T::get_unique_mut(self)
+  }
+  
+}
+
+impl<T: SrcTarget + ?Sized> Borrow<T> for UniqueSrc<T> {
+  
+  #[inline]
+  fn borrow(&self) -> &T {
+    &**self
+  }
+  
+}
+
+impl<T: SrcTarget + ?Sized> BorrowMut<T> for UniqueSrc<T> {
+  
+  #[inline]
+  fn borrow_mut(&mut self) -> &mut T {
+    &mut **self
+  }
+  
+}
+
+impl<T: SrcTarget + ?Sized> AsRef<T> for UniqueSrc<T> {
+  
+  #[inline]
+  fn as_ref(&self) -> &T {
+    &**self
+  }
+  
+}
+
+impl<T: SrcTarget + ?Sized> AsMut<T> for UniqueSrc<T> {
+  
+  #[inline]
+  fn as_mut(&mut self) -> &mut T {
+    &mut **self
+  }
+  
+}
+
+impl<T: SrcTarget + Index<I> + ?Sized, I> Index<I> for UniqueSrc<T> {
+  
+  type Output = T::Output;
+  
+  #[inline]
+  fn index(&self, index: I) -> &Self::Output {
+    &self.deref()[index]
+  }
+  
+}
+
+impl<T: SrcTarget + IndexMut<I> + ?Sized, I> IndexMut<I> for UniqueSrc<T> {
+  
+  #[inline]
+  fn index_mut(&mut self, index: I) -> &mut Self::Output {
+    &mut self.deref_mut()[index]
+  }
+  
+}
+
+impl<T: Hash + SrcTarget + ?Sized> Hash for UniqueSrc<T> {
+  
+  #[inline]
+  fn hash<H: Hasher>(&self, state: &mut H) {
+    T::hash(&**self, state);
+  }
+  
+}
+
+impl<T: PartialEq<U> + SrcTarget + ?Sized, U: SrcTarget + ?Sized> PartialEq<UniqueSrc<U>> for UniqueSrc<T> {
+  
+  #[inline]
+  fn eq(&self, other: &UniqueSrc<U>) -> bool {
+    T::eq(&**self, &**other)
+  }
+  
+  #[inline]
+  fn ne(&self, other: &UniqueSrc<U>) -> bool {
+    T::ne(&**self, &**other)
+  }
+  
+}
+
+impl<T: Eq + SrcTarget + ?Sized> Eq for UniqueSrc<T> {}
+
+impl<T: PartialOrd<U> + SrcTarget + ?Sized, U: SrcTarget + ?Sized> PartialOrd<UniqueSrc<U>> for UniqueSrc<T> {
+  
+  #[inline]
+  fn ge(&self, other: &UniqueSrc<U>) -> bool {
+    T::ge(&**self, &**other)
+  }
+  
+  #[inline]
+  fn gt(&self, other: &UniqueSrc<U>) -> bool {
+    T::gt(&**self, &**other)
+  }
+  
+  #[inline]
+  fn le(&self, other: &UniqueSrc<U>) -> bool {
+    T::le(&**self, &**other)
+  }
+  
+  #[inline]
+  fn lt(&self, other: &UniqueSrc<U>) -> bool {
+    T::lt(&**self, &**other)
+  }
+  
+  #[inline]
+  fn partial_cmp(&self, other: &UniqueSrc<U>) -> Option<Ordering> {
+    T::partial_cmp(&**self, &**other)
+  }
+  
+}
+
+impl<T: Ord + SrcTarget + ?Sized> Ord for UniqueSrc<T> {
+  
+  #[inline]
+  fn cmp(&self, other: &Self) -> Ordering {
+    T::cmp(&**self, &**other)
+  }
+  
+}
+
+impl<T: Debug + SrcTarget + ?Sized> Debug for UniqueSrc<T> {
+  
+  #[inline]
+  fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+    T::fmt(self, f)
+  }
+  
+}
+
+impl<T: SrcTarget + ?Sized> Pointer for UniqueSrc<T> {
+  
+  #[inline]
+  fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+    Pointer::fmt(&self.start, f)
+  }
+  
+}
+
+impl<T: SrcTarget + ?Sized> Drop for UniqueSrc<T> {
+  
+  fn drop(&mut self) {
+    // the UninqueSrc doesn't hold a strong ref so that the weaks can't be upgraded, but for most purposes it is just a Src that is known to be the only one; so drop it as if it were one
+    self.header().inc_strong_count();
+    // SAFETY:
+    // * all constructor fns for Src initialize header from InnerHeader::new_inner::<T::Item>
+    // * all constructor fns for Src initialize the elements
+    // * the header is only accessed from InnerHeader::get_header
+    // * this is guaranteed to be the last strong reference, because UniqueSrc's invariant prevents any other strong references from existing
+    unsafe { InnerHeader::drop_strong::<T::Item>(self.header); }
   }
   
 }
@@ -1347,15 +1786,21 @@ impl SrcIndex<str> for RangeToInclusive<usize> {
   
 }
 
-pub trait SrcTarget: sealed::SrcTarget {}
+pub trait SrcTarget: sealed::SrcTarget {
+  
+  type Item;
+  
+}
 
 #[diagnostic::do_not_recommend]
-impl<T> SrcTarget for T {}
+impl<T> SrcTarget for T {
+  
+  type Item = T;
+  
+}
 
 #[diagnostic::do_not_recommend]
 impl<T> sealed::SrcTarget for T {
-  
-  type Item = T;
   
   type Len = ();
   
@@ -1365,13 +1810,32 @@ impl<T> sealed::SrcTarget for T {
     unsafe { rc.start.as_ref() }
   }
   
+  fn get_unique(rc: &UniqueSrc<Self>) -> &Self {
+    // SAFETY:
+    // all constructor fns of UniqueSrc guarantee initialization of all elements
+    unsafe { rc.start.as_ref() }
+  }
+  
+  fn get_unique_mut(rc: &mut UniqueSrc<Self>) -> &mut Self {
+    // SAFETY:
+    // all constructor fns of UniqueSrc guarantee initialization of all elements
+    unsafe { rc.start.as_mut() }
+  }
+  
+  #[inline]
+  fn new_unique_from_clone(&self) -> UniqueSrc<Self> where <Self as SrcTarget>::Item: Clone {
+    UniqueSrc::single(T::clone(self))
+  }
+  
 }
 
-impl<T> SrcTarget for [T] {}
-
-impl<T> sealed::SrcTarget for [T] {
+impl<T> SrcTarget for [T] {
   
   type Item = T;
+  
+}
+
+impl<T> sealed::SrcTarget for [T] {
   
   type Len = usize;
   
@@ -1383,13 +1847,36 @@ impl<T> sealed::SrcTarget for [T] {
     unsafe { slice::from_raw_parts(start, len) }
   }
   
+  fn get_unique(rc: &UniqueSrc<Self>) -> &Self {
+    let start = rc.start.as_ptr().cast_const();
+    let len = rc.len;
+    // SAFETY:
+    // * all constructor fns of Src guarantee initialization of all elements; if this is a sliced clone, Src::clone_from_bounds guarantees that start and len will still be valid
+    unsafe { slice::from_raw_parts(start, len) }
+  }
+  
+  fn get_unique_mut(rc: &mut UniqueSrc<Self>) -> &mut Self {
+    let start = rc.start.as_ptr();
+    let len = rc.len;
+    // SAFETY:
+    // * all constructor fns of Src guarantee initialization of all elements; if this is a sliced clone, Src::clone_from_bounds guarantees that start and len will still be valid
+    unsafe { slice::from_raw_parts_mut(start, len) }
+  }
+  
+  #[inline]
+  fn new_unique_from_clone(&self) -> UniqueSrc<Self> where <Self as SrcTarget>::Item: Clone {
+    UniqueSrc::clone_from_slice(self)
+  }
+  
 }
 
-impl SrcTarget for str {}
-
-impl sealed::SrcTarget for str {
+impl SrcTarget for str {
   
   type Item = u8;
+  
+}
+
+impl sealed::SrcTarget for str {
   
   type Len = usize;
   
@@ -1400,6 +1887,29 @@ impl sealed::SrcTarget for str {
     let slice: &[u8] = unsafe { slice::from_raw_parts(start, len) };
     // SAFETY: all constructor fns of Src<str> guarantee the contents are UTF8
     unsafe { str::from_utf8_unchecked(slice) }
+  }
+  
+  fn get_unique(rc: &UniqueSrc<Self>) -> &Self {
+    let start = rc.start.as_ptr().cast_const();
+    let len = rc.len;
+    // SAFETY: all constructor fns of Src guarantee initialization of all elements (well, one of them unsafely passes that requirement on to the caller); if this is a sliced clone, Src::clone_from_bounds guarantees that start and len will still be valid
+    let slice: &[u8] = unsafe { slice::from_raw_parts(start, len) };
+    // SAFETY: all constructor fns of Src<str> guarantee the contents are UTF8
+    unsafe { str::from_utf8_unchecked(slice) }
+  }
+  
+  fn get_unique_mut(rc: &mut UniqueSrc<Self>) -> &mut Self {
+    let start = rc.start.as_ptr();
+    let len = rc.len;
+    // SAFETY: all constructor fns of Src guarantee initialization of all elements (well, one of them unsafely passes that requirement on to the caller); if this is a sliced clone, Src::clone_from_bounds guarantees that start and len will still be valid
+    let slice: &mut [u8] = unsafe { slice::from_raw_parts_mut(start, len) };
+    // SAFETY: all constructor fns of Src<str> guarantee the contents are UTF8
+    unsafe { str::from_utf8_unchecked_mut(slice) }
+  }
+  
+  #[inline]
+  fn new_unique_from_clone(&self) -> UniqueSrc<Self> {
+    UniqueSrc::new(self)
   }
   
 }
@@ -1447,11 +1957,15 @@ mod sealed {
   
   pub trait SrcTarget {
     
-    type Item;
-    
     type Len: Copy + Default;
     
     fn get(rc: &super::Src<Self>) -> &Self where Self: super::SrcTarget;
+    
+    fn get_unique(rc: &super::UniqueSrc<Self>) -> &Self where Self: super::SrcTarget;
+    
+    fn get_unique_mut(rc: &mut super::UniqueSrc<Self>) -> &mut Self where Self: super::SrcTarget;
+    
+    fn new_unique_from_clone(&self) -> super::UniqueSrc<Self> where Self: super::SrcTarget, Self::Item: Clone;
     
   }
   
