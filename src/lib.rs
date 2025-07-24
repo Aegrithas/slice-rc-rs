@@ -1786,7 +1786,7 @@ impl SrcIndex<str> for RangeToInclusive<usize> {
   
 }
 
-pub trait SrcTarget: sealed::SrcTarget {
+pub trait SrcTarget: private::SealedSrcTarget {
   
   type Item;
   
@@ -1800,7 +1800,7 @@ impl<T> SrcTarget for T {
 }
 
 #[diagnostic::do_not_recommend]
-impl<T> sealed::SrcTarget for T {
+impl<T> private::SealedSrcTarget for T {
   
   type Len = ();
   
@@ -1835,7 +1835,7 @@ impl<T> SrcTarget for [T] {
   
 }
 
-impl<T> sealed::SrcTarget for [T] {
+impl<T> private::SealedSrcTarget for [T] {
   
   type Len = usize;
   
@@ -1876,7 +1876,7 @@ impl SrcTarget for str {
   
 }
 
-impl sealed::SrcTarget for str {
+impl private::SealedSrcTarget for str {
   
   type Len = usize;
   
@@ -1914,11 +1914,11 @@ impl sealed::SrcTarget for str {
   
 }
 
-pub trait SrcSlice: SrcTarget + sealed::SrcSlice {}
+pub trait SrcSlice: SrcTarget + private::SealedSrcSlice {}
 
 impl<T> SrcSlice for [T] {}
 
-impl<T> sealed::SrcSlice for [T] {
+impl<T> private::SealedSrcSlice for [T] {
   
   #[inline]
   fn validate_range(_this: &Src<Self>, _range: Range<usize>) {}
@@ -1930,7 +1930,7 @@ impl<T> sealed::SrcSlice for [T] {
 
 impl SrcSlice for str {}
 
-impl sealed::SrcSlice for str {
+impl private::SealedSrcSlice for str {
   
   fn validate_range(this: &Src<Self>, range: Range<usize>) {
     let s: &str = &**this;
@@ -1951,11 +1951,11 @@ impl sealed::SrcSlice for str {
   
 }
 
-mod sealed {
+mod private {
   
   use std::ops::Range;
   
-  pub trait SrcTarget {
+  pub trait SealedSrcTarget {
     
     type Len: Copy + Default;
     
@@ -1969,7 +1969,7 @@ mod sealed {
     
   }
   
-  pub trait SrcSlice: SrcTarget<Len = usize> {
+  pub trait SealedSrcSlice: SealedSrcTarget<Len = usize> {
     
     fn validate_range(this: &super::Src<Self>, range: Range<usize>) where Self: super::SrcSlice;
     
