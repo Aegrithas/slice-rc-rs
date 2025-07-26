@@ -28,7 +28,7 @@ impl<T: SrcTarget + ?Sized> Src<T> {
   }
   
   #[inline]
-  pub fn root_ptr_eq(this: &Src<T>, other: &Src<T>) -> bool {
+  pub fn same_root(this: &Src<T>, other: &Src<T>) -> bool {
     this.header == other.header
   }
   
@@ -583,7 +583,7 @@ impl<T: SrcTarget + ?Sized> WeakSrc<T> {
   }
   
   #[inline]
-  pub fn root_ptr_eq(&self, other: &Src<T>) -> bool {
+  pub fn same_root(&self, other: &Src<T>) -> bool {
     self.header == other.header
   }
   
