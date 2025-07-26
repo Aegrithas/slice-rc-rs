@@ -38,7 +38,7 @@ impl<T: SrcTarget + ?Sized> Src<T> {
     // * all constructor fns for Src initialize header from InnerHeader::new_inner::<T::Item>
     // * the header is only accessed from InnerHeader::get_header
     let root_start = unsafe { InnerHeader::get_body_ptr(this.header) };
-    this.start == root_start
+    this.start == root_start && T::len_as_usize(this.len) == this.header().len()
   }
   
   pub fn downgrade(this: &Src<T>) -> WeakSrc<T> {
@@ -589,11 +589,16 @@ impl<T: SrcTarget + ?Sized> WeakSrc<T> {
   
   #[inline]
   pub fn is_root(&self) -> bool {
+    if self.is_dangling() {
+      return true
+    }
+    // SAFETY: we just checked that this weak is not dangling
+    let header = unsafe { self.header() };
     // SAFETY:
     // * all constructor fns for Src initialize header from InnerHeader::new_inner::<T::Item>
     // * the header is only accessed from InnerHeader::get_header
     let root_start = unsafe { InnerHeader::get_body_ptr(self.header) };
-    self.start == root_start
+    self.start == root_start && T::len_as_usize(self.len) == header.len()
   }
   
   pub fn strong_count(&self) -> usize {
@@ -1804,6 +1809,11 @@ impl<T> private::SealedSrcTarget for T {
   
   type Len = ();
   
+  #[inline]
+  fn len_as_usize((): Self::Len) -> usize {
+    1
+  }
+  
   fn get(rc: &Src<Self>) -> &Self {
     // SAFETY:
     // all constructor fns of Src guarantee initialization of all elements
@@ -1838,6 +1848,11 @@ impl<T> SrcTarget for [T] {
 impl<T> private::SealedSrcTarget for [T] {
   
   type Len = usize;
+  
+  #[inline]
+  fn len_as_usize(len: Self::Len) -> usize {
+    len
+  }
   
   fn get(rc: &Src<Self>) -> &Self {
     let start = rc.start.as_ptr().cast_const();
@@ -1879,6 +1894,11 @@ impl SrcTarget for str {
 impl private::SealedSrcTarget for str {
   
   type Len = usize;
+  
+  #[inline]
+  fn len_as_usize(len: Self::Len) -> usize {
+    len
+  }
   
   fn get(rc: &Src<Self>) -> &Self {
     let start = rc.start.as_ptr().cast_const();
@@ -1958,6 +1978,8 @@ mod private {
   pub trait SealedSrcTarget {
     
     type Len: Copy + Default;
+    
+    fn len_as_usize(len: Self::Len) -> usize;
     
     fn get(rc: &super::Src<Self>) -> &Self where Self: super::SrcTarget;
     
