@@ -6,8 +6,20 @@ use inner::*;
 
 pub struct Src<T: SrcTarget + ?Sized> {
   
+  // SAFETY:
+  // requires:
+  // * initialized from InnerHeader::new_inner::<T::Item>(_)
   header: NonNull<InnerHeader>,
+  // SAFETY:
+  // requires:
+  // * initialized from either InnerHeader::get_body_ptr::<T::Item>(self.header) or InnerHeader::get_elem_ptr::<T::Item>(self.header, i) where 0 <= i <= InnerHeader::get_header(self.header).len()
+  // * all body elements have been properly initialized (e.g., self.start.as_ref() will not cause UB)
   start: NonNull<T::Item>,
+  // SAFETY:
+  // requires when T: SrcSlice:
+  // * self.start.add(self.len) <= InnerHeader::get_body_ptr::<T::Item>(self.header).add(InnerHeader::get_header(self.header).len())
+  // requires when T: Sized:
+  // * self.start < InnerHeader::get_body_ptr::<T::Item>(self.header).add(InnerHeader::get_header(self.header).len())
   len: T::Len,
   _phantom: PhantomData<*const T>,
   
@@ -17,7 +29,7 @@ impl<T: SrcTarget + ?Sized> Src<T> {
   
   fn header(&self) -> &InnerHeader {
     // SAFETY:
-    // * all constructor fns for Src initialize header from InnerHeader::new_inner::<T::Item>
+    // * the invariant for self.header guarantees that it is from InnerHeader::new_inner::<T::Item>
     // * the header is only accessed from InnerHeader::get_header
     unsafe { InnerHeader::get_header(self.header) }
   }
@@ -35,7 +47,7 @@ impl<T: SrcTarget + ?Sized> Src<T> {
   #[inline]
   pub fn is_root(this: &Src<T>) -> bool {
     // SAFETY:
-    // * all constructor fns for Src initialize header from InnerHeader::new_inner::<T::Item>
+    // * the invariant for this.header guarantees that it is from InnerHeader::new_inner::<T::Item>
     // * the header is only accessed from InnerHeader::get_header
     let root_start = unsafe { InnerHeader::get_body_ptr(this.header) };
     this.start == root_start && T::len_as_usize(this.len) == this.header().len()
@@ -44,8 +56,11 @@ impl<T: SrcTarget + ?Sized> Src<T> {
   pub fn downgrade(this: &Src<T>) -> WeakSrc<T> {
     this.header().inc_weak_count();
     WeakSrc {
+      // SAFETY: this.header's invariant implies _.header's invariant
       header: this.header,
+      // SAFETY: this.header's invariant implies _.header's invariant
       start: this.start,
+      // SAFETY: this.header's invariant implies _.header's invariant
       len: this.len,
       _phantom: PhantomData,
     }
@@ -67,8 +82,11 @@ impl<T: SrcTarget + ?Sized> Src<T> {
       // but the strong count should be 0 so that the weak references can't upgrade (because that Src would be an alias of the UniqueSrc, which violates UniqueSrc's invariant)
       header.dec_strong_count();
       let this2 = UniqueSrc {
+        // SAFETY: this.header has the same safety invariant as this2.header, in addition to the requirement that no other strong Src has access to this allocation, which is checked by header.strong_count() == 1
         header: this.header,
+        // SAFETY: this.start has the same safety invariant as this2.start
         start: this.start,
+        // SAFETY: this.len has the same safety invariant as this2.len
         len: this.len,
         _phantom: PhantomData,
       };
@@ -101,12 +119,15 @@ impl<T: SrcSlice + ?Sized> Src<T> {
   pub fn into_root(self) -> Src<T> {
     let header = self.header();
     // SAFETY:
-    // * all constructor fns for Src initialize header from InnerHeader::new_inner::<T::Item>
+    // * the invariant for self.header guarantees that it is from InnerHeader::new_inner::<T::Item>
     // * the header is only accessed from InnerHeader::get_header
-    let start = unsafe { InnerHeader::get_body_ptr(self.header) };
+    let start = unsafe { InnerHeader::get_body_ptr::<T::Item>(self.header) };
     let this = Src {
+      // SAFETY: self.header has the same safety invariant as this.header
       header: self.header,
+      // SAFETY: start was just aquired from InnerHeader::get_body_ptr::<T::Item>(self.header), which, with the assertions, meets the safety requirement
       start,
+      // SAFETY: header.len() meets the safety requirements by definition
       len: header.len(),
       _phantom: PhantomData,
     };
@@ -144,8 +165,11 @@ impl<T: SrcSlice + ?Sized> Src<T> {
     assert!(index < header.len(), "index {index} out of range for slice of length {}", header.len());
     let start_ptr = unsafe { InnerHeader::get_elem_ptr::<T::Item>(self.header, index) };
     let this = Src {
+      // SAFETY: self.header has the same safety invariant as this.header
       header: self.header,
+      // SAFETY: start_ptr was just aquired from InnerHeader::get_elem_ptr::<T::Item>(self.header, start_inc), which, with the assertions, meets the safety requirement
       start: start_ptr,
+      // SAFETY: the assertions guarantee the safety requirements
       len: (),
       _phantom: PhantomData,
     };
@@ -170,13 +194,16 @@ impl<T: SrcSlice + ?Sized> Src<T> {
     T::validate_range(&self, start_inc..end_exc);
     let len = end_exc - start_inc;
     // SAFETY:
-    // * all constructor fns for Src initialize header from InnerHeader::new_inner::<T::Item>
+    // * the invariant for self.header guarantees that it is from InnerHeader::new_inner::<T::Item>
     // * the header is only accessed from InnerHeader::get_header
-    // * the assertions verify that start_exc <= end_exc <= header.len
+    // * the assertions verify that start_exc <= end_exc <= header.len()
     let start_ptr = unsafe { InnerHeader::get_elem_ptr::<T::Item>(self.header, start_inc) };
     let this = Src {
+      // SAFETY: self.header has the same safety invariant as this.header
       header: self.header,
+      // SAFETY: start_ptr was just aquired from InnerHeader::get_elem_ptr::<T::Item>(self.header, start_inc), which, with the assertions, meets the safety requirement
       start: start_ptr,
+      // SAFETY: the assertions guarantee the safety requirements
       len,
       _phantom: PhantomData,
     };
@@ -195,43 +222,32 @@ impl<T> Src<T> {
   
   #[inline]
   pub fn single_uninit() -> Src<MaybeUninit<T>> {
-    let Src { header, start, len, _phantom } = Src::<[T]>::new_uninit(1);
-    debug_assert_eq!(len, 1);
-    Src {
-      header,
-      start,
-      len: (),
-      _phantom: PhantomData,
-    }
+    UniqueSrc::into_src(UniqueSrc::single_uninit())
   }
   
   #[inline]
   pub fn single_zeroed() -> Src<MaybeUninit<T>> {
-    let Src { header, start, len, _phantom } = Src::<[T]>::new_zeroed(1);
-    debug_assert_eq!(len, 1);
-    Src {
-      header,
-      start,
-      len: (),
-      _phantom: PhantomData,
-    }
+    UniqueSrc::into_src(UniqueSrc::single_zeroed())
   }
   
   #[inline]
   pub fn as_slice(this: Src<T>) -> Src<[T]> {
-    let _this = Src {
+    let this2 = Src {
+      // SAFETY: this.header has the same invariant as this2
       header: this.header,
+      // SAFETY: this.start has the same invariant as this2
       start: this.start,
+      // SAFETY: this.len's invariant implies this2.len's invariant
       len: 1,
       _phantom: PhantomData,
     };
     forget(this); // don't modify the strong count because this is logically the same Src
-    _this
+    this2
   }
   
   #[inline]
   pub fn clone_as_slice(this: &Src<T>) -> Src<[T]> {
-    Src::as_slice(this.clone())
+    Src::as_slice(Src::clone(this))
   }
   
   #[inline]
@@ -300,13 +316,18 @@ impl<T> Src<MaybeUninit<T>> {
   
   // SAFETY: As with MaybeUninit::assume_init, it is up to the caller to guarantee that the inner value really is in an initialized state. Calling this when the content is not yet fully initialized causes immediate undefined behavior.
   pub unsafe fn assume_init(self) -> Src<T> {
-    let Src { header, start, len, _phantom } = self;
-    Src {
-      header,
-      start: start.cast(),
-      len,
+    // TODO: rephrase the safety requirements for InnerHeader to explicitly allow punning between T and type with T-like layout
+    let this = Src {
+      // SAFETY: self.header has *almost* the same safety invariant as this.header: the only difference is that self uses MaybeUninit<T> where this expects T
+      header: self.header,
+      // SAFETY: self.start has *almost* the same safety invariant as this.start: the only difference is that self uses MaybeUninit<T> where this expects T
+      start: self.start.cast(),
+      // SAFETY: self.len has *almost* the same safety invariant as this.len: the only difference is that self uses MaybeUninit<T> where this expects T
+      len: self.len,
       _phantom: PhantomData,
-    }
+    };
+    forget(self); // don't decrease the strong counter because this is logically the same Src
+    this
   }
   
 }
@@ -315,13 +336,18 @@ impl<T> Src<[MaybeUninit<T>]> {
   
   // SAFETY: As with MaybeUninit::assume_init, it is up to the caller to guarantee that the inner value really is in an initialized state. Calling this when the content is not yet fully initialized causes immediate undefined behavior.
   pub unsafe fn assume_init(self) -> Src<[T]> {
-    let Src { header, start, len, _phantom } = self;
-    Src {
-      header,
-      start: start.cast(),
-      len,
+    // TODO: rephrase the safety requirements for InnerHeader to explicitly allow punning between T and type with T-like layout
+    let this = Src {
+      // SAFETY: self.header has *almost* the same safety invariant as this.header: the only difference is that self uses MaybeUninit<T> where this expects T
+      header: self.header,
+      // SAFETY: self.start has *almost* the same safety invariant as this.start: the only difference is that self uses MaybeUninit<T> where this expects T
+      start: self.start.cast(),
+      // SAFETY: self.len has *almost* the same safety invariant as this.len: the only difference is that self uses MaybeUninit<T> where this expects T
+      len: self.len,
       _phantom: PhantomData,
-    }
+    };
+    forget(self); // don't decrease the strong counter because this is logically the same Src
+    this
   }
   
 }
@@ -330,14 +356,12 @@ impl Src<str> {
   
   #[inline]
   pub fn new(s: impl AsRef<str>) -> Src<str> {
-    let s = s.as_ref();
-    let Src { header, start, len, _phantom } = Src::copy_from_slice(s.as_bytes());
-    Src { header, start, len, _phantom: PhantomData }
+    UniqueSrc::into_src(UniqueSrc::new(s))
   }
   
   #[inline]
   pub fn from_utf8(v: Src<[u8]>) -> Result<Src<str>, Utf8Error> {
-    let _: &str = <str>::from_utf8(&*v)?;
+    let _: &str = str::from_utf8(&*v)?;
     // SAFETY: <str>::from_utf8() guarantees that the contents are UTF-8
     Ok(unsafe { Src::from_utf8_unchecked(v) })
   }
@@ -346,14 +370,40 @@ impl Src<str> {
   // The bytes passed in must be valid UTF-8
   #[inline]
   pub unsafe fn from_utf8_unchecked(v: Src<[u8]>) -> Src<str> {
-    let Src { header, start, len, _phantom } = v;
-    Src { header, start, len, _phantom: PhantomData }
+    // TODO: rephrase the safety requirements for InnerHeader to explicitly allow punning between T and type with T-like layout
+    let this = Src {
+      // SAFETY: v.header has *almost* the same safety invariant as this.header: the only difference is that v uses [u8] where this expects str;
+      //         the pun from [u8] to str adds the safety requirement that v's content is valid UTF-8, but this requirement is passed on to the caller
+      header: v.header,
+      // SAFETY: v.start has *almost* the same safety invariant as this.start: the only difference is that v uses [u8] where this expects str;
+      //         the pun from [u8] to str adds the safety requirement that v's content is valid UTF-8, but this requirement is passed on to the caller
+      start: v.start,
+      // SAFETY: v.len has *almost* the same safety invariant as this.len: the only difference is that v uses [u8] where this expects str;
+      //         the pun from [u8] to str adds the safety requirement that v's content is valid UTF-8, but this requirement is passed on to the caller
+      len: v.len,
+      _phantom: PhantomData,
+    };
+    forget(v);
+    this
   }
   
   #[inline]
   pub fn as_bytes(this: Src<str>) -> Src<[u8]> {
-    let Src { header, start, len, _phantom } = this;
-    Src { header, start, len, _phantom: PhantomData }
+    // TODO: rephrase the safety requirements for InnerHeader to explicitly allow punning between T and type with T-like layout
+    let this2 = Src {
+      // SAFETY: this.header has *almost* the same safety invariant as this2.header: the only difference is that this uses str where this2 expects [u8];
+      //         the pun from str to [u8] relaxes the safety requirement that this's content is valid UTF-8
+      header: this.header,
+      // SAFETY: this.start has *almost* the same safety invariant as this2.start: the only difference is that this uses str where this2 expects [u8];
+      //         the pun from str to [u8] relaxes the safety requirement that this's content is valid UTF-8
+      start: this.start,
+      // SAFETY: this.len has *almost* the same safety invariant as this2.len: the only difference is that this uses str where this2 expects [u8];
+      //         the pun from str to [u8] relaxes the safety requirement that this's content is valid UTF-8
+      len: this.len,
+      _phantom: PhantomData,
+    };
+    forget(this);
+    this2
   }
   
 }
@@ -364,8 +414,11 @@ impl<T: SrcTarget + ?Sized> Clone for Src<T> {
   fn clone(&self) -> Self {
     self.header().inc_strong_count();
     Self {
+      // SAFETY: this.header has the same safety invariant as _.header
       header: self.header,
+      // SAFETY: this.start has the same safety invariant as _.start
       start: self.start,
+      // SAFETY: this.len has the same safety invariant as _.len
       len: self.len,
       _phantom: PhantomData,
     }
@@ -525,8 +578,23 @@ const fn non_null_max<T>() -> NonNull<T> {
 
 pub struct WeakSrc<T: SrcTarget + ?Sized> {
   
+  // SAFETY:
+  // requires:
+  // * initialized from InnerHeader::new_inner::<T::Item>(_) or non_null_max::<ItemHeader>()
   header: NonNull<InnerHeader>,
+  // SAFETY:
+  // requires:
+  // * either:
+  //   * initialized from either InnerHeader::get_body_ptr::<T::Item>(self.header) or InnerHeader::get_elem_ptr::<T::Item>(self.header, i) where 0 <= i <= InnerHeader::get_header(self.header).len()
+  //   * all body elements have been properly initialized (e.g., self.start.as_ref() will not cause UB), or strong_count == 0
+  // * or, iff self.header is non_null_max::<ItemHeader>(), then self.start is non_null_max::<T::Item>()
   start: NonNull<T::Item>,
+  // SAFETY:
+  // only applies if self.header != non_null_max::<ItemHeader>():
+  // requires when T: SrcSlice:
+  // * self.start.add(self.len) <= InnerHeader::get_body_ptr::<T::Item>(self.header).add(InnerHeader::get_header(self.header).len())
+  // requires when T: Sized:
+  // * self.start < InnerHeader::get_body_ptr::<T::Item>(self.header).add(InnerHeader::get_header(self.header).len())
   len: T::Len,
   _phantom: PhantomData<*const T>,
   
@@ -570,8 +638,11 @@ impl<T: SrcTarget + ?Sized> WeakSrc<T> {
     }
     header.inc_strong_count();
     Some(Src {
+      // SAFETY: if this weak is not dangling (which we checked earlier), then this self.header has the same safety invariant as _.header
       header: self.header,
+      // SAFETY: if this weak is not dangling (which we checked earlier), then this self.start has the same safety invariant as _.start
       start: self.start,
+      // SAFETY: if this weak is not dangling (which we checked earlier), then this self.len has the same safety invariant as _.len
       len: self.len,
       _phantom: PhantomData,
     })
@@ -649,8 +720,11 @@ impl<T: SrcSlice + ?Sized> WeakSrc<T> {
     // * the header is only accessed from InnerHeader::get_header
     let start = unsafe { InnerHeader::get_body_ptr(self.header) };
     let this = WeakSrc {
+      // SAFETY: this self.header has the same safety invariant as this.header
       header: self.header,
+      // SAFETY: if this weak is not dangling (which we checked earlier), the start that we just calculated earlier meets the safety invariant by definition
       start,
+      // SAFETY: if this weak is not dangling (which we checked earlier), header.len() meets the safety invariant by definition
       len: header.len(),
       _phantom: PhantomData,
     };
@@ -690,8 +764,11 @@ impl<T: SrcSlice + ?Sized> WeakSrc<T> {
     assert!(index < header.len(), "index {index} out of range for slice of length {}", header.len());
     let start_ptr = unsafe { InnerHeader::get_elem_ptr::<T::Item>(self.header, index) };
     let this = WeakSrc {
+      // SAFETY: the safety invariant of self.header is the same as this.header
       header: self.header,
+      // SAFETY: if this weak is not dangling (which we checked earlier), the start_ptr that we just calculated earlier meets the safety invariant by definition
       start: start_ptr,
+      // SAFETY: if this weak is not dangling (which we checked earlier), the safety invariant is checked by the assertion above
       len: (),
       _phantom: PhantomData,
     };
@@ -725,8 +802,11 @@ impl<T: SrcSlice + ?Sized> WeakSrc<T> {
     // * the assertions verify that start_exc <= end_exc <= header.len
     let start_ptr = unsafe { InnerHeader::get_elem_ptr::<T::Item>(self.header, start_inc) };
     let this = WeakSrc {
+      // SAFETY: the safety invariant of self.header is the same as this.header
       header: self.header,
+      // SAFETY: if this weak is not dangling (which we checked earlier), the start_ptr that we just calculated earlier meets the safety invariant by definition
       start: start_ptr,
+      // SAFETY: if this weak is not dangling (which we checked earlier), the safety invariant is checked by the assertions above
       len,
       _phantom: PhantomData,
     };
@@ -750,8 +830,11 @@ impl<T> WeakSrc<T> {
   #[inline]
   pub fn as_slice(self) -> WeakSrc<[T]> {
     let this = WeakSrc {
+      // SAFETY: the safety invariant of self.header is the same as this.header
       header: self.header,
+      // SAFETY: the safety invariant of self.start is the same as this.start
       start: self.start,
+      // SAFETY: if this weak is dangling, then self.len has no safety invariant; if it is weak, then the safety invariant of self.len is logically identical to that of this.len
       len: 1,
       _phantom: PhantomData,
     };
@@ -779,8 +862,11 @@ impl<T: SrcTarget + ?Sized> Clone for WeakSrc<T> {
       unsafe { self.header() }.inc_weak_count();
     }
     Self {
+      // SAFETY: the safety invariant of self.header is the same as _.header
       header: self.header,
+      // SAFETY: the safety invariant of self.start is the same as _.start
       start: self.start,
+      // SAFETY: the safety invariant of self.len is the same as _.len
       len: self.len,
       _phantom: PhantomData,
     }
@@ -830,7 +916,15 @@ impl<T: SrcTarget + ?Sized> Drop for WeakSrc<T> {
 
 pub struct UninitSrc<T: SrcTarget + ?Sized> {
   
+  // SAFETY:
+  // requires:
+  // * initialized from InnerHeader::new_inner::<T::Item>(_)
   header: NonNull<InnerHeader>,
+  // SAFETY:
+  // requires when T: SrcSlice:
+  // * self.start.add(self.len) <= InnerHeader::get_body_ptr::<T::Item>(self.header).add(InnerHeader::get_header(self.header).len())
+  // requires when T: Sized:
+  // * self.start < InnerHeader::get_body_ptr::<T::Item>(self.header).add(InnerHeader::get_header(self.header).len())
   len: T::Len,
   _phantom: PhantomData<*const T>,
   
@@ -853,8 +947,11 @@ impl<T: SrcTarget + ?Sized> UninitSrc<T> {
     // * the header is only accessed from InnerHeader::get_header
     let start = unsafe { InnerHeader::get_body_ptr::<T::Item>(self.header) };
     WeakSrc {
+      // SAFETY: the safety invariant for self.header implies that of _.header
       header: self.header,
+      // SAFETY: the start we just calculated meets the safety invariant by definition
       start,
+      // SAFETY: the safety invariant for self.len implies tha tof _.len
       len: self.len,
       _phantom: PhantomData,
     }
@@ -885,13 +982,17 @@ impl<T> UninitSrc<T> {
   
   #[inline]
   pub fn single() -> UninitSrc<T> {
-    let UninitSrc { header, len, _phantom } = UninitSrc::<[T]>::new(1);
-    debug_assert_eq!(len, 1);
-    UninitSrc {
-      header,
+    let this = UninitSrc::<[T]>::new(1);
+    debug_assert_eq!(this.len, 1);
+    let this2 = UninitSrc {
+      // SAFETY: the safety invariant of this.header is the same as this2.header
+      header: this.header,
+      // SAFETY: the safety invariant of this.len is implies that of this2.len
       len: (),
       _phantom: PhantomData,
-    }
+    };
+    forget(this);
+    this2
   }
   
   #[inline]
@@ -907,8 +1008,11 @@ impl<T> UninitSrc<T> {
     // SAFETY: no one else has seen the body of the allocation (because the weaks only look at the header after the strong count has been initialized), so this write is okay
     unsafe { start.write(value); }
     let this = UniqueSrc {
+      // SAFETY: the safety invariant of self.header implies that of this.header
       header: self.header,
+      // SAFETY: after being initialized by start.write(_), the safety invariant of this.start is fulfilled by definition
       start,
+      // SAFETY: the safety invariant of self.len implies that of this.len
       len: self.len,
       _phantom: PhantomData,
     };
@@ -919,7 +1023,9 @@ impl<T> UninitSrc<T> {
   #[inline]
   pub fn as_slice(self) -> UninitSrc<[T]> {
     let this = UninitSrc {
+      // SAFETY: the safety invariant of self.header is the same as this.header
       header: self.header,
+      // SAFETY: the safety invariant of self.len implies that of this.len
       len: 1,
       _phantom: PhantomData,
     };
@@ -944,7 +1050,9 @@ impl<T> UninitSrc<[T]> {
   pub fn new(len: usize) -> UninitSrc<[T]> {
     let header = InnerHeader::new_inner::<T, Alloc>(len, 0);
     Self {
+      // SAFETY: the safety invariant of _.header is fulfilled by definition
       header,
+      // SAFETY: the safety invariant of _.len is fulfilled by definition
       len,
       _phantom: PhantomData,
     }
@@ -975,8 +1083,11 @@ impl<T> UninitSrc<[T]> {
     // if all elements are successfully initialized, then forget the drop guard; in other words, the guard only drops the contents if a panic occurs part way through initialization
     forget(guard);
     let this = UniqueSrc {
+      // SAFETY: the safety invariant of self.header is the same as this.header
       header: self.header,
+      // SAFETY: after a successful initialization, the safety invariant of this.start is fulfilled by definition
       start,
+      // SAFETY: the safety invariant of self.len is the same as this.len
       len: self.len,
       _phantom: PhantomData,
     };
@@ -1064,8 +1175,20 @@ impl<T> Drop for PartialInitGuard<T> {
 
 pub struct UniqueSrc<T: SrcTarget + ?Sized> {
   
+  // SAFETY:
+  // requires:
+  // * initialized from InnerHeader::new_inner::<T::Item>(_)
   header: NonNull<InnerHeader>,
+  // SAFETY:
+  // requires:
+  // * initialized from either InnerHeader::get_body_ptr::<T::Item>(self.header) or InnerHeader::get_elem_ptr::<T::Item>(self.header, i) where 0 <= i <= InnerHeader::get_header(self.header).len()
+  // * all body elements have been properly initialized (e.g., self.start.as_ref() will not cause UB)
   start: NonNull<T::Item>,
+  // SAFETY:
+  // requires when T: SrcSlice:
+  // * self.start.add(self.len) <= InnerHeader::get_body_ptr::<T::Item>(self.header).add(InnerHeader::get_header(self.header).len())
+  // requires when T: Sized:
+  // * self.start < InnerHeader::get_body_ptr::<T::Item>(self.header).add(InnerHeader::get_header(self.header).len())
   len: T::Len,
   _phantom: PhantomData<*const T>,
   
@@ -1084,17 +1207,27 @@ impl<T: SrcTarget + ?Sized> UniqueSrc<T> {
     // safety note: the strong count is 0 until this UniqueSrc is turned into a Src, so the WeakSrc will never read or write from the body during the lifetime of the UniqueSrc
     this.header().inc_weak_count();
     WeakSrc {
+      // SAFETY: the safety invariant of this.header implies that of _.header
       header: this.header,
+      // SAFETY: the safety invariant of this.start implies that of _.start
       start: this.start,
+      // SAFETY: the safety invariant of this.len implies that of _.len
       len: this.len,
       _phantom: PhantomData,
     }
   }
   
   pub fn into_src(this: UniqueSrc<T>) -> Src<T> {
-    let UniqueSrc { header, start, len, _phantom } = this;
     this.header().inc_strong_count();
-    let this2 = Src { header, start, len, _phantom: PhantomData };
+    let this2 = Src {
+      // SAFETY: the safety invariant of this.header is the same as this2.header
+      header: this.header,
+      // SAFETY: the safety invariant of this.start is the same as this2.start
+      start: this.start,
+      // SAFETY: the safety invariant of this.len is the same as this2.len
+      len: this.len,
+      _phantom: PhantomData,
+    };
     forget(this);
     this2
   }
@@ -1129,32 +1262,51 @@ impl<T> UniqueSrc<T> {
   
   #[inline]
   pub fn single_uninit() -> UniqueSrc<MaybeUninit<T>> {
-    let UniqueSrc { header, start, len, _phantom } = UniqueSrc::<[T]>::new_uninit(1);
-    debug_assert_eq!(len, 1);
-    UniqueSrc {
-      header,
-      start,
+    let this = UniqueSrc::<[T]>::new_uninit(1);
+    debug_assert_eq!(this.len, 1);
+    let this2 = UniqueSrc {
+      // SAFETY: the safety invariant of this.header is the same as this2.header
+      header: this.header,
+      // SAFETY: the safety invariant of this.start is the same as this2.start
+      start: this.start,
+      // SAFETY: the safety invariant of this.len implies that of this.len
       len: (),
       _phantom: PhantomData,
-    }
+    };
+    forget(this);
+    this2
   }
   
   #[inline]
   pub fn single_zeroed() -> UniqueSrc<MaybeUninit<T>> {
-    let UniqueSrc { header, start, len, _phantom } = UniqueSrc::<[T]>::new_zeroed(1);
-    debug_assert_eq!(len, 1);
-    UniqueSrc {
-      header,
-      start,
+    let this = UniqueSrc::<[T]>::new_zeroed(1);
+    debug_assert_eq!(this.len, 1);
+    let this2 = UniqueSrc {
+      // SAFETY: the safety invariant of this.header is the same as this2.header
+      header: this.header,
+      // SAFETY: the safety invariant of this.start is the same as this2.start
+      start: this.start,
+      // SAFETY: the safety invariant of this.len implies that of this2.len
       len: (),
       _phantom: PhantomData,
-    }
+    };
+    forget(this);
+    this2
   }
   
   #[inline]
   pub fn as_slice(this: UniqueSrc<T>) -> UniqueSrc<[T]> {
-    let UniqueSrc { header, start, len: (), _phantom } = this;
-    UniqueSrc { header, start, len: 1, _phantom: PhantomData }
+    let this2 = UniqueSrc {
+      // SAFETY: the safety invariant of this.header is the same as this2.header
+      header: this.header,
+      // SAFETY: the safety invariant of this.start is the same as this2.start
+      start: this.start,
+      // SAFETY: the safety invariant of this.len implies this2.len
+      len: 1,
+      _phantom: PhantomData,
+    };
+    forget(this);
+    this2
   }
   
   #[inline]
@@ -1173,8 +1325,11 @@ impl<T> UniqueSrc<[T]> {
     // * no one else has seen the ptr yet, so the read/write requirements are fine
     let start = unsafe { InnerHeader::get_body_ptr::<T>(header) }.cast();
     UniqueSrc {
+      // the safety invariant of _.header is fulfilled by definition
       header,
+      // the safety invariant of _.start is fulfilled by definition
       start,
+      // the safety invariant of _.len is fulfilled by definition
       len,
       _phantom: PhantomData,
     }
@@ -1187,8 +1342,11 @@ impl<T> UniqueSrc<[T]> {
     // * no one else has seen the ptr yet, so the read/write requirements are fine
     let start = unsafe { InnerHeader::get_body_ptr::<T>(header) }.cast();
     UniqueSrc {
+      // the safety invariant of _.header is fulfilled by definition
       header,
+      // the safety invariant of _.start is fulfilled by definition
       start,
+      // the safety invariant of _.len is fulfilled by definition
       len,
       _phantom: PhantomData,
     }
@@ -1220,8 +1378,11 @@ impl<T> UniqueSrc<[T]> {
     // SAFETY: no one else has seen the body, so write is fine; InnerHeader::new_inner::<T>(N) guarantees N elements, so we definitely have room for [T; N]
     unsafe { start.cast().write(values) };
     UniqueSrc {
+      // the safety invariant of _.header is fulfilled by definition
       header,
+      // with start.write(_), the safety invariant of _.start is fulfilled by definition
       start,
+      // the safety invariant of _.len is fulfilled by definition
       len: N,
       _phantom: PhantomData,
     }
@@ -1261,8 +1422,11 @@ impl<T> UniqueSrc<[T]> {
     // * start just came from a new allocation, and therefore doesn't overlap with a slice that was passed into this function
     unsafe { values.copy_to_nonoverlapping(start, len); }
     UniqueSrc {
+      // the safety invariant of _.header is fulfilled by definition
       header,
+      // with values.copy_to_nonoverlapping(_, _), the safety invariant of _.start is fulfilled by definition
       start,
+      // the safety invariant of _.len is fulfilled by definition
       len,
       _phantom: PhantomData,
     }
@@ -1274,13 +1438,18 @@ impl<T> UniqueSrc<MaybeUninit<T>> {
   
   // SAFETY: As with MaybeUninit::assume_init, it is up to the caller to guarantee that the inner value really is in an initialized state. Calling this when the content is not yet fully initialized causes immediate undefined behavior.
   pub unsafe fn assume_init(self) -> UniqueSrc<T> {
-    let UniqueSrc { header, start, len, _phantom } = self;
-    UniqueSrc {
-      header,
-      start: start.cast(),
-      len,
+    // TODO: rephrase the safety requirements for InnerHeader to explicitly allow punning between T and type with T-like layout
+    let this = UniqueSrc {
+      // SAFETY: self.header has *almost* the same safety invariant as this.header: the only difference is that self uses MaybeUninit<T> where this expects T
+      header: self.header,
+      // SAFETY: self.start has *almost* the same safety invariant as this.start: the only difference is that self uses MaybeUninit<T> where this expects T
+      start: self.start.cast(),
+      // SAFETY: self.len has *almost* the same safety invariant as this.len: the only difference is that self uses MaybeUninit<T> where this expects T
+      len: self.len,
       _phantom: PhantomData,
-    }
+    };
+    forget(self);
+    this
   }
   
 }
@@ -1289,11 +1458,14 @@ impl<T> UniqueSrc<[MaybeUninit<T>]> {
   
   // SAFETY: As with MaybeUninit::assume_init, it is up to the caller to guarantee that the inner value really is in an initialized state. Calling this when the content is not yet fully initialized causes immediate undefined behavior.
   pub unsafe fn assume_init(self) -> UniqueSrc<[T]> {
-    let UniqueSrc { header, start, len, _phantom } = self;
+    // TODO: rephrase the safety requirements for InnerHeader to explicitly allow punning between T and type with T-like layout
     UniqueSrc {
-      header,
-      start: start.cast(),
-      len,
+      // SAFETY: self.header has *almost* the same safety invariant as this.header: the only difference is that self uses MaybeUninit<T> where this expects T
+      header: self.header,
+      // SAFETY: self.start has *almost* the same safety invariant as this.start: the only difference is that self uses MaybeUninit<T> where this expects T
+      start: self.start.cast(),
+      // SAFETY: self.len has *almost* the same safety invariant as this.len: the only difference is that self uses MaybeUninit<T> where this expects T
+      len: self.len,
       _phantom: PhantomData,
     }
   }
@@ -1305,8 +1477,9 @@ impl UniqueSrc<str> {
   #[inline]
   pub fn new(s: impl AsRef<str>) -> UniqueSrc<str> {
     let s = s.as_ref();
-    let UniqueSrc { header, start, len, _phantom } = UniqueSrc::copy_from_slice(s.as_bytes());
-    UniqueSrc { header, start, len, _phantom: PhantomData }
+    let this = UniqueSrc::copy_from_slice(s.as_bytes());
+    // SAFETY: the bytes here came from a str, which already upholds the UTF-8 safety invariant
+    unsafe { UniqueSrc::from_utf8_unchecked(this) }
   }
   
   #[inline]
@@ -1320,14 +1493,40 @@ impl UniqueSrc<str> {
   // The bytes passed in must be valid UTF-8
   #[inline]
   pub unsafe fn from_utf8_unchecked(v: UniqueSrc<[u8]>) -> UniqueSrc<str> {
-    let UniqueSrc { header, start, len, _phantom } = v;
-    UniqueSrc { header, start, len, _phantom: PhantomData }
+    // TODO: rephrase the safety requirements for InnerHeader to explicitly allow punning between T and type with T-like layout
+    let this = UniqueSrc {
+      // SAFETY: v.header has *almost* the same safety invariant as this.header: the only difference is that v uses [u8] where this expects str;
+      //         the pun from [u8] to str adds the safety requirement that v's content is valid UTF-8, but this requirement is passed on to the caller
+      header: v.header,
+      // SAFETY: v.start has *almost* the same safety invariant as this.start: the only difference is that v uses [u8] where this expects str;
+      //         the pun from [u8] to str adds the safety requirement that v's content is valid UTF-8, but this requirement is passed on to the caller
+      start: v.start,
+      // SAFETY: v.len has *almost* the same safety invariant as this.len: the only difference is that v uses [u8] where this expects str;
+      //         the pun from [u8] to str adds the safety requirement that v's content is valid UTF-8, but this requirement is passed on to the caller
+      len: v.len,
+      _phantom: PhantomData,
+    };
+    forget(v);
+    this
   }
   
   #[inline]
   pub fn as_bytes(this: UniqueSrc<str>) -> UniqueSrc<[u8]> {
-    let UniqueSrc { header, start, len, _phantom } = this;
-    UniqueSrc { header, start, len, _phantom: PhantomData }
+    // TODO: rephrase the safety requirements for InnerHeader to explicitly allow punning between T and type with T-like layout
+    let this2 = UniqueSrc {
+      // SAFETY: this.header has *almost* the same safety invariant as this2.header: the only difference is that this uses str where this2 expects [u8];
+      //         the pun from str to [u8] relaxes the safety requirement that this's content is valid UTF-8
+      header: this.header,
+      // SAFETY: this.start has *almost* the same safety invariant as this2.start: the only difference is that this uses str where this2 expects [u8];
+      //         the pun from str to [u8] relaxes the safety requirement that this's content is valid UTF-8
+      start: this.start,
+      // SAFETY: this.len has *almost* the same safety invariant as this2.len: the only difference is that this uses str where this2 expects [u8];
+      //         the pun from str to [u8] relaxes the safety requirement that this's content is valid UTF-8
+      len: this.len,
+      _phantom: PhantomData,
+    };
+    forget(this);
+    this2
   }
   
 }
