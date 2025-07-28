@@ -222,12 +222,12 @@ impl<T> Src<T> {
   
   #[inline]
   pub fn single_uninit() -> Src<MaybeUninit<T>> {
-    UniqueSrc::into_src(UniqueSrc::single_uninit())
+    UniqueSrc::into_shared(UniqueSrc::single_uninit())
   }
   
   #[inline]
   pub fn single_zeroed() -> Src<MaybeUninit<T>> {
-    UniqueSrc::into_src(UniqueSrc::single_zeroed())
+    UniqueSrc::into_shared(UniqueSrc::single_zeroed())
   }
   
   #[inline]
@@ -261,12 +261,12 @@ impl<T> Src<[T]> {
   
   #[inline]
   pub fn new_uninit(len: usize) -> Src<[MaybeUninit<T>]> {
-    UniqueSrc::into_src(UniqueSrc::new_uninit(len))
+    UniqueSrc::into_shared(UniqueSrc::new_uninit(len))
   }
   
   #[inline]
   pub fn new_zeroed(len: usize) -> Src<[MaybeUninit<T>]> {
-    UniqueSrc::into_src(UniqueSrc::new_zeroed(len))
+    UniqueSrc::into_shared(UniqueSrc::new_zeroed(len))
   }
   
   #[inline]
@@ -287,7 +287,7 @@ impl<T> Src<[T]> {
   
   #[inline]
   pub fn from_array<const N: usize>(values: [T; N]) -> Src<[T]> {
-    UniqueSrc::into_src(UniqueSrc::from_array(values))
+    UniqueSrc::into_shared(UniqueSrc::from_array(values))
   }
   
   #[inline]
@@ -302,12 +302,12 @@ impl<T> Src<[T]> {
   
   #[inline]
   pub fn clone_from_slice(values: &[T]) -> Src<[T]> where T: Clone {
-    UniqueSrc::into_src(UniqueSrc::clone_from_slice(values))
+    UniqueSrc::into_shared(UniqueSrc::clone_from_slice(values))
   }
   
   #[inline]
   pub fn copy_from_slice(values: &[T]) -> Src<[T]> where T: Copy {
-    UniqueSrc::into_src(UniqueSrc::copy_from_slice(values))
+    UniqueSrc::into_shared(UniqueSrc::copy_from_slice(values))
   }
   
 }
@@ -356,7 +356,7 @@ impl Src<str> {
   
   #[inline]
   pub fn new(s: impl AsRef<str>) -> Src<str> {
-    UniqueSrc::into_src(UniqueSrc::new(s))
+    UniqueSrc::into_shared(UniqueSrc::new(s))
   }
   
   #[inline]
@@ -997,7 +997,7 @@ impl<T> UninitSrc<T> {
   
   #[inline]
   pub fn init(self, value: T) -> Src<T> {
-    UniqueSrc::into_src(self.init_unique(value))
+    UniqueSrc::into_shared(self.init_unique(value))
   }
   
   pub fn init_unique(self, value: T) -> UniqueSrc<T> {
@@ -1060,7 +1060,7 @@ impl<T> UninitSrc<[T]> {
   
   #[inline]
   pub fn init_from_fn<F: FnMut(usize) -> T>(self, f: F) -> Src<[T]> {
-    UniqueSrc::into_src(self.init_unique_from_fn(f))
+    UniqueSrc::into_shared(self.init_unique_from_fn(f))
   }
   
   pub fn init_unique_from_fn<F: FnMut(usize) -> T>(self, mut f: F) -> UniqueSrc<[T]> {
@@ -1217,7 +1217,7 @@ impl<T: SrcTarget + ?Sized> UniqueSrc<T> {
     }
   }
   
-  pub fn into_src(this: UniqueSrc<T>) -> Src<T> {
+  pub fn into_shared(this: UniqueSrc<T>) -> Src<T> {
     this.header().inc_strong_count();
     let this2 = Src {
       // SAFETY: the safety invariant of this.header is the same as this2.header
