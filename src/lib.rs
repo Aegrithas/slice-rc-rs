@@ -301,13 +301,13 @@ impl<T> Src<[T]> {
   }
   
   #[inline]
-  pub fn clone_from_slice(values: &[T]) -> Src<[T]> where T: Clone {
-    UniqueSrc::into_shared(UniqueSrc::clone_from_slice(values))
+  pub fn cloned(values: &[T]) -> Src<[T]> where T: Clone {
+    UniqueSrc::into_shared(UniqueSrc::cloned(values))
   }
   
   #[inline]
-  pub fn copy_from_slice(values: &[T]) -> Src<[T]> where T: Copy {
-    UniqueSrc::into_shared(UniqueSrc::copy_from_slice(values))
+  pub fn copied(values: &[T]) -> Src<[T]> where T: Copy {
+    UniqueSrc::into_shared(UniqueSrc::copied(values))
   }
   
 }
@@ -1399,7 +1399,7 @@ impl<T> UniqueSrc<[T]> {
   }
   
   #[inline]
-  pub fn clone_from_slice(values: &[T]) -> UniqueSrc<[T]> where T: Clone {
+  pub fn cloned(values: &[T]) -> UniqueSrc<[T]> where T: Clone {
     UniqueSrc::from_fn(values.len(), |i| {
       // SAFETY: i ranges from 0..len==src.len()
       unsafe { values.get_unchecked(i) }.clone()
@@ -1407,7 +1407,7 @@ impl<T> UniqueSrc<[T]> {
   }
   
   #[inline]
-  pub fn copy_from_slice(values: &[T]) -> UniqueSrc<[T]> where T: Copy {
+  pub fn copied(values: &[T]) -> UniqueSrc<[T]> where T: Copy {
     let len = values.len();
     let header = InnerHeader::new_inner::<T, Alloc>(len);
     // SAFETY:
@@ -1477,7 +1477,7 @@ impl UniqueSrc<str> {
   #[inline]
   pub fn new(s: impl AsRef<str>) -> UniqueSrc<str> {
     let s = s.as_ref();
-    let this = UniqueSrc::copy_from_slice(s.as_bytes());
+    let this = UniqueSrc::copied(s.as_bytes());
     // SAFETY: the bytes here came from a str, which already upholds the UTF-8 safety invariant
     unsafe { UniqueSrc::from_utf8_unchecked(this) }
   }
@@ -2079,7 +2079,7 @@ impl<T> private::SealedSrcTarget for [T] {
   
   #[inline]
   fn new_unique_from_clone(&self) -> UniqueSrc<Self> where <Self as SrcTarget>::Item: Clone {
-    UniqueSrc::clone_from_slice(self)
+    UniqueSrc::cloned(self)
   }
   
 }
