@@ -20,7 +20,7 @@ impl InnerHeader {
   
   // SAFETY:
   // various static methods on InnerHeader offer access to the contents; nothing else is guaranteed to be sound
-  pub fn new_inner<T, A: AllocFlavor>(len: usize, init_strong_count: usize) -> NonNull<InnerHeader> {
+  pub fn new_inner<T, A: AllocFlavor>(len: usize) -> NonNull<InnerHeader> {
     let Ok((layout, body_offset)) = Self::inner_layout::<T>(len) else {
       panic!("length overflow")
     };
@@ -29,7 +29,7 @@ impl InnerHeader {
     let Some(ptr) = NonNull::new(ptr) else {
       handle_alloc_error(layout)
     };
-    let strong_count = Cell::new(init_strong_count);
+    let strong_count = Cell::new(0);
     // all strong references logically hold one collective weak reference
     let weak_count = Cell::new(1);
     let header = Self { layout, body_offset, len, strong_count, weak_count };

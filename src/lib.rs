@@ -1048,7 +1048,7 @@ impl<T> UninitSrc<[T]> {
   // this is placed here for simplicity
   #[inline]
   pub fn new(len: usize) -> UninitSrc<[T]> {
-    let header = InnerHeader::new_inner::<T, Alloc>(len, 0);
+    let header = InnerHeader::new_inner::<T, Alloc>(len);
     Self {
       // SAFETY: the safety invariant of _.header is fulfilled by definition
       header,
@@ -1319,7 +1319,7 @@ impl<T> UniqueSrc<T> {
 impl<T> UniqueSrc<[T]> {
   
   pub fn new_uninit(len: usize) -> UniqueSrc<[MaybeUninit<T>]> {
-    let header = InnerHeader::new_inner::<T, Alloc>(len, 1);
+    let header = InnerHeader::new_inner::<T, Alloc>(len);
     // SAFETY:
     // * we just got this from InnerHeader::new_inner::<T>
     // * no one else has seen the ptr yet, so the read/write requirements are fine
@@ -1336,7 +1336,7 @@ impl<T> UniqueSrc<[T]> {
   }
   
   pub fn new_zeroed(len: usize) -> UniqueSrc<[MaybeUninit<T>]> {
-    let header = InnerHeader::new_inner::<T, AllocZeroed>(len, 1);
+    let header = InnerHeader::new_inner::<T, AllocZeroed>(len);
     // SAFETY:
     // * we just got this from InnerHeader::new_inner::<T>
     // * no one else has seen the ptr yet, so the read/write requirements are fine
@@ -1370,7 +1370,7 @@ impl<T> UniqueSrc<[T]> {
   }
   
   pub fn from_array<const N: usize>(values: [T; N]) -> UniqueSrc<[T]> {
-    let header = InnerHeader::new_inner::<T, Alloc>(N, 1);
+    let header = InnerHeader::new_inner::<T, Alloc>(N);
     // SAFETY:
     // * we just got this from InnerHeader::new_inner::<T>
     // * no one else has seen the ptr yet, so the read/write requirements are fine
@@ -1409,7 +1409,7 @@ impl<T> UniqueSrc<[T]> {
   #[inline]
   pub fn copy_from_slice(values: &[T]) -> UniqueSrc<[T]> where T: Copy {
     let len = values.len();
-    let header = InnerHeader::new_inner::<T, Alloc>(len, 1);
+    let header = InnerHeader::new_inner::<T, Alloc>(len);
     // SAFETY:
     // * we just got this from InnerHeader::new_inner::<T>
     // * no one else has seen the ptr yet, so the read/write requirements are fine
