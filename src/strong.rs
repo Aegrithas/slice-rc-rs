@@ -567,3 +567,606 @@ impl<T: SrcTarget + ?Sized> Drop for Src<T> {
   }
   
 }
+
+#[cfg(test)]
+mod tests {
+  
+  use std::{cell::Cell, mem::MaybeUninit, ops::Deref, panic::{catch_unwind, AssertUnwindSafe}, str::Utf8Error};
+  
+  use crate::*;
+  
+  #[test]
+  fn ptr_eq() {
+    let s1: Src<[u8]> = Src::from_default(0);
+    let s2: Src<[u8]> = Src::clone(&s1);
+    assert_eq!(s1, s2);
+    assert!(Src::ptr_eq(&s1, &s2));
+    let s3: Src<[u8]> = Src::from_default(0);
+    assert_eq!(s1, s3);
+    assert_eq!(s2, s3);
+    assert!(!Src::ptr_eq(&s1, &s3));
+    assert!(!Src::ptr_eq(&s2, &s3));
+  }
+  
+  #[test]
+  fn same_root() {
+    let s1: Src<[u8]> = Src::from_default(1);
+    let s2: Src<[u8]> = s1.clone_slice(1..);
+    assert_ne!(s1, s2);
+    assert!(!Src::ptr_eq(&s1, &s2));
+    assert!(Src::same_root(&s1, &s2));
+    let s3: Src<[u8]> = Src::from_default(1);
+    let s4: Src<[u8]> = s3.clone_slice(1..);
+    assert_eq!(s1, s3);
+    assert_ne!(s3, s4);
+    assert_eq!(s2, s4);
+    assert!(!Src::ptr_eq(&s1, &s3));
+    assert!(!Src::ptr_eq(&s2, &s4));
+    assert!(!Src::ptr_eq(&s2, &s4));
+    assert!(!Src::same_root(&s1, &s3));
+    assert!(!Src::same_root(&s2, &s4));
+    assert!(Src::same_root(&s3, &s4));
+  }
+  
+  #[test]
+  fn is_root() {
+    let s1: Src<[u8]> = Src::from_default(1);
+    let s2: Src<[u8]> = s1.clone_slice(..);
+    let s3: Src<[u8]> = s1.clone_slice(1..);
+    assert!(Src::is_root(&s1));
+    assert!(Src::is_root(&s2));
+    assert!(!Src::is_root(&s3));
+  }
+  
+  #[test]
+  fn downgrade() {
+    let s1: Src<[u8]> = Src::from_default(0);
+    let w: WeakSrc<[u8]> = Src::downgrade(&s1);
+    let s2: Src<[u8]> = w.upgrade().unwrap();
+    assert_eq!(s1, s2);
+  }
+  
+  #[test]
+  fn strong_count() {
+    let s1: Src<[u8]> = Src::from_default(0);
+    assert_eq!(Src::strong_count(&s1), 1);
+    let s2: Src<[u8]> = Src::clone(&s1);
+    assert_eq!(Src::strong_count(&s1), 2);
+    assert_eq!(Src::strong_count(&s2), 2);
+    let w1: WeakSrc<[u8]> = Src::downgrade(&s1);
+    assert_eq!(Src::strong_count(&s1), 2);
+    assert_eq!(Src::strong_count(&s2), 2);
+    assert_eq!(w1.strong_count(), 2);
+    let w2: WeakSrc<[u8]> = Src::downgrade(&s1);
+    assert_eq!(Src::strong_count(&s1), 2);
+    assert_eq!(Src::strong_count(&s2), 2);
+    assert_eq!(w1.strong_count(), 2);
+    assert_eq!(w2.strong_count(), 2);
+    std::mem::drop(s1);
+    assert_eq!(Src::strong_count(&s2), 1);
+    assert_eq!(w1.strong_count(), 1);
+    assert_eq!(w2.strong_count(), 1);
+    std::mem::drop(s2);
+    assert_eq!(w1.strong_count(), 0);
+    assert_eq!(w2.strong_count(), 0);
+  }
+  
+  #[test]
+  fn weak_count() {
+    let s1: Src<[u8]> = Src::from_default(0);
+    assert_eq!(Src::weak_count(&s1), 0);
+    let s2: Src<[u8]> = Src::clone(&s1);
+    assert_eq!(Src::weak_count(&s1), 0);
+    assert_eq!(Src::weak_count(&s2), 0);
+    let w1: WeakSrc<[u8]> = Src::downgrade(&s1);
+    assert_eq!(Src::weak_count(&s1), 1);
+    assert_eq!(Src::weak_count(&s2), 1);
+    assert_eq!(w1.weak_count(), 1);
+    let w2: WeakSrc<[u8]> = w1.clone();
+    assert_eq!(Src::weak_count(&s1), 2);
+    assert_eq!(Src::weak_count(&s2), 2);
+    assert_eq!(w1.weak_count(), 2);
+    assert_eq!(w2.weak_count(), 2);
+    std::mem::drop(s1);
+    assert_eq!(Src::weak_count(&s2), 2);
+    assert_eq!(w1.weak_count(), 2);
+    assert_eq!(w2.weak_count(), 2);
+    std::mem::drop(w1);
+    assert_eq!(Src::weak_count(&s2), 1);
+    assert_eq!(w2.weak_count(), 1);
+    std::mem::drop(s2);
+    assert_eq!(w2.weak_count(), 0);
+  }
+  
+  #[test]
+  fn into_unique() {
+    let s1: Src<[u8]> = Src::from_default(0);
+    let s2: Src<[u8]> = Src::clone(&s1);
+    let s1: Src<[u8]> = Src::into_unique(s1).unwrap_err();
+    std::mem::drop(s2);
+    let w: WeakSrc<[u8]> = Src::downgrade(&s1);
+    assert!(w.upgrade().is_some());
+    let u: UniqueSrc<[u8]> = Src::into_unique(s1).unwrap();
+    assert!(w.upgrade().is_none());
+    let s1: Src<[u8]> = UniqueSrc::into_shared(u);
+    assert!(w.upgrade().is_some());
+    _ = s1;
+  }
+  
+  #[test]
+  fn make_unique() {
+    { // non-unique
+      let s1: Src<[u8]> = Src::from_default(0);
+      let s2: Src<[u8]> = Src::clone(&s1);
+      let w1: WeakSrc<[u8]> = Src::downgrade(&s1);
+      let u: UniqueSrc<[u8]> = Src::make_unique(s1);
+      let w2: WeakSrc<[u8]> = UniqueSrc::downgrade(&u);
+      assert!(!w1.same_root(&w2));
+      _ = s2;
+    }
+    { // unique
+      let s: Src<[u8]> = Src::from_default(0);
+      let w1: WeakSrc<[u8]> = Src::downgrade(&s);
+      let u: UniqueSrc<[u8]> = Src::make_unique(s);
+      let w2: WeakSrc<[u8]> = UniqueSrc::downgrade(&u);
+      assert!(w1.same_root(&w2));
+    }
+  }
+  
+  #[test]
+  fn len() {
+    let s: Src<[u8]> = Src::from_default(0);
+    assert_eq!(s.len(), 0);
+    let s: Src<[u8]> = Src::from_default(1);
+    assert_eq!(s.len(), 1);
+    let s: Src<[u8]> = Src::from_default(17);
+    assert_eq!(s.len(), 17);
+  }
+  
+  #[test]
+  fn is_empty() {
+    let s: Src<[u8]> = Src::from_default(0);
+    assert!(s.is_empty());
+    let s: Src<[u8]> = Src::from_default(1);
+    assert!(!s.is_empty());
+    let s: Src<[u8]> = Src::from_default(17);
+    assert!(!s.is_empty());
+  }
+  
+  #[test]
+  fn into_root() {
+    let s: Src<[u8]> = Src::from_default(1);
+    assert!(Src::is_root(&s));
+    let s: Src<[u8]> = s.into_slice(1..);
+    assert!(!Src::is_root(&s));
+    let s: Src<[u8]> = s.into_root();
+    assert!(Src::is_root(&s));
+  }
+  
+  #[test]
+  fn clone_root() {
+    let s1: Src<[u8]> = Src::from_default(1);
+    assert!(Src::is_root(&s1));
+    let s1: Src<[u8]> = s1.into_slice(1..);
+    assert!(!Src::is_root(&s1));
+    let s2: Src<[u8]> = s1.clone_root();
+    assert!(Src::is_root(&s2));
+    assert!(Src::same_root(&s1, &s2));
+  }
+  
+  #[test]
+  fn downgrade_root() {
+    let s1: Src<[u8]> = Src::from_default(1);
+    assert!(Src::is_root(&s1));
+    let s1: Src<[u8]> = s1.into_slice(1..);
+    assert!(!Src::is_root(&s1));
+    let w: WeakSrc<[u8]> = s1.downgrade_root();
+    assert!(w.is_root());
+    let s2: Src<[u8]> = w.upgrade().unwrap();
+    assert!(Src::is_root(&s2));
+    assert!(Src::same_root(&s1, &s2));
+  }
+  
+  #[test]
+  fn into_slice() {
+    { // slice
+      let s: Src<[u8]> = Src::from_array([1, 2, 3]);
+      assert_eq!(&*s, &[1, 2, 3]);
+      let s: Src<[u8]> = s.into_slice(1..);
+      assert_eq!(&*s, &[2, 3]);
+      let s: Src<[u8]> = s.into_slice(..1);
+      assert_eq!(&*s, &[2]);
+    }
+    { // item 1
+      let s: Src<[u8]> = Src::from_array([1, 2, 3]);
+      assert_eq!(&*s, &[1, 2, 3]);
+      let s: Src<u8> = s.into_slice(2);
+      assert_eq!(&*s, &3);
+    }
+    { // item 2
+      let s: Src<[u8]> = Src::from_array([1, 2, 3]);
+      assert_eq!(&*s, &[1, 2, 3]);
+      let s: Src<[u8]> = s.into_slice(1..);
+      assert_eq!(&*s, &[2, 3]);
+      let s: Src<u8> = s.into_slice(0);
+      assert_eq!(&*s, &2);
+    }
+  }
+  
+  #[test]
+  fn clone_slice() {
+    { // slice
+      let s1: Src<[u8]> = Src::from_array([1, 2, 3]);
+      assert_eq!(&*s1, &[1, 2, 3]);
+      let s1: Src<[u8]> = s1.into_slice(1..);
+      assert_eq!(&*s1, &[2, 3]);
+      let s2: Src<[u8]> = s1.clone_slice(..1);
+      assert_eq!(&*s2, &[2]);
+      assert!(Src::same_root(&s1, &s2));
+    }
+    { // item 1
+      let s1: Src<[u8]> = Src::from_array([1, 2, 3]);
+      assert_eq!(&*s1, &[1, 2, 3]);
+      let s2: Src<u8> = s1.clone_slice(2);
+      assert_eq!(&*s2, &3);
+      let s2: Src<[u8]> = Src::as_slice(s2);
+      assert_eq!(&*s2, &[3]);
+      assert!(Src::same_root(&s1, &s2));
+    }
+    { // item 2
+      let s1: Src<[u8]> = Src::from_array([1, 2, 3]);
+      assert_eq!(&*s1, &[1, 2, 3]);
+      let s1: Src<[u8]> = s1.into_slice(1..);
+      assert_eq!(&*s1, &[2, 3]);
+      let s2: Src<u8> = s1.clone_slice(0);
+      assert_eq!(&*s2, &2);
+      let s2: Src<[u8]> = Src::as_slice(s2);
+      assert_eq!(&*s2, &[2]);
+      assert!(Src::same_root(&s1, &s2));
+    }
+  }
+  
+  #[test]
+  fn downgrade_slice() {
+    { // slice
+      let s1: Src<[u8]> = Src::from_array([1, 2, 3]);
+      assert_eq!(&*s1, &[1, 2, 3]);
+      let s1: Src<[u8]> = s1.into_slice(1..);
+      assert_eq!(&*s1, &[2, 3]);
+      let w: WeakSrc<[u8]> = s1.downgrade_slice(..1);
+      let s2: Src<[u8]> = w.upgrade().unwrap();
+      assert_eq!(&*s2, &[2]);
+      assert!(Src::same_root(&s1, &s2));
+    }
+    { // item 1
+      let s1: Src<[u8]> = Src::from_array([1, 2, 3]);
+      assert_eq!(&*s1, &[1, 2, 3]);
+      let w: WeakSrc<u8> = s1.downgrade_slice(2);
+      let s2: Src<u8> = w.upgrade().unwrap();
+      assert_eq!(&*s2, &3);
+      let s2: Src<[u8]> = Src::as_slice(s2);
+      assert_eq!(&*s2, &[3]);
+      assert!(Src::same_root(&s1, &s2));
+    }
+    { // item 2
+      let s1: Src<[u8]> = Src::from_array([1, 2, 3]);
+      assert_eq!(&*s1, &[1, 2, 3]);
+      let s1: Src<[u8]> = s1.into_slice(1..);
+      assert_eq!(&*s1, &[2, 3]);
+      let w: WeakSrc<u8> = s1.downgrade_slice(0);
+      let s2: Src<u8> = w.upgrade().unwrap();
+      assert_eq!(&*s2, &2);
+      let s2: Src<[u8]> = Src::as_slice(s2);
+      assert_eq!(&*s2, &[2]);
+      assert!(Src::same_root(&s1, &s2));
+    }
+  }
+  
+  #[test]
+  fn single() {
+    let s: Src<u8> = Src::single(42);
+    assert_eq!(*s, 42);
+  }
+  
+  #[test]
+  fn single_uninit() {
+    let s: Src<MaybeUninit<u8>> = Src::single_uninit();
+    let mut u: UniqueSrc<MaybeUninit<u8>> = Src::make_unique(s);
+    u.write(42);
+    let s: Src<MaybeUninit<u8>> = UniqueSrc::into_shared(u);
+    // SAFETY: just initialized it with u.write()
+    let s: Src<u8> = unsafe { s.assume_init() };
+    assert_eq!(*s, 42);
+  }
+  
+  #[test]
+  fn single_zeroed() {
+    let s: Src<MaybeUninit<u8>> = Src::single_zeroed();
+    // SAFETY: u8 is a zeroable type
+    let s: Src<u8> = unsafe { s.assume_init() };
+    assert_eq!(*s, 0);
+  }
+  
+  #[test]
+  fn as_slice() {
+    { // single root
+      let s1: Src<u8> = Src::single(42);
+      let s2: Src<[u8]> = Src::as_slice(Src::clone(&s1));
+      assert_eq!([*s1], *s2);
+    }
+    { // from slice
+      let s1: Src<[u8]> = Src::from_array([1, 2, 3]);
+      let s2: Src<u8> = s1.clone_slice(1);
+      let s3: Src<[u8]> = Src::as_slice(Src::clone(&s2));
+      assert_eq!(s1[1], *s2);
+      assert_eq!([*s2], *s3);
+    }
+  }
+  
+  #[test]
+  fn clone_as_slice() {
+    { // single root
+      let s1: Src<u8> = Src::single(42);
+      let s2: Src<[u8]> = Src::clone_as_slice(&s1);
+      assert_eq!([*s1], *s2);
+    }
+    { // from slice
+      let s1: Src<[u8]> = Src::from_array([1, 2, 3]);
+      let s2: Src<u8> = s1.clone_slice(1);
+      let s3: Src<[u8]> = Src::clone_as_slice(&s2);
+      assert_eq!(s1[1], *s2);
+      assert_eq!([*s2], *s3);
+    }
+  }
+  
+  #[test]
+  fn downgrade_as_slice() {
+    { // single root
+      let s1: Src<u8> = Src::single(42);
+      let w: WeakSrc<[u8]> = Src::downgrade_as_slice(&s1);
+      let s2: Src<[u8]> = w.upgrade().unwrap();
+      assert_eq!([*s1], *s2);
+    }
+    { // from slice
+      let s1: Src<[u8]> = Src::from_array([1, 2, 3]);
+      let s2: Src<u8> = s1.clone_slice(1);
+      let w: WeakSrc<[u8]> = Src::downgrade_as_slice(&s2);
+      let s3: Src<[u8]> = w.upgrade().unwrap();
+      assert_eq!(s1[1], *s2);
+      assert_eq!([*s2], *s3);
+    }
+  }
+  
+  #[test]
+  fn new_uninit() {
+    let s: Src<[MaybeUninit<u8>]> = Src::new_uninit(3);
+    assert_eq!(s.len(), 3);
+    let mut u: UniqueSrc<[MaybeUninit<u8>]> = Src::make_unique(s);
+    for (i, elem) in u.iter_mut().enumerate() {
+      elem.write(i as _);
+    }
+    let s: Src<[MaybeUninit<u8>]> = UniqueSrc::into_shared(u);
+    // SAFETY: just initialized it with all the elem.write()s
+    let s: Src<[u8]> = unsafe { s.assume_init() };
+    assert_eq!(*s, [0, 1, 2]);
+  }
+  
+  #[test]
+  fn new_zeroed() {
+    let s: Src<[MaybeUninit<u8>]> = Src::new_zeroed(3);
+    assert_eq!(s.len(), 3);
+    // SAFETY: u8 is a zeroable type
+    let s: Src<[u8]> = unsafe { s.assume_init() };
+    assert_eq!(*s, [0, 0, 0]);
+  }
+  
+  #[test]
+  fn from_fn() {
+    { // normal
+      let s: Src<[usize]> = Src::from_fn(3, |i| i * 2);
+      assert_eq!(*s, [0, 2, 4]);
+    }
+    { // panic
+      let drop_flags: [_; 6] = std::array::from_fn(|_| AssertUnwindSafe(Cell::new(false)));
+      struct DropFlagger<'a>(&'a Cell<bool>);
+      impl Drop for DropFlagger<'_> {
+        
+        fn drop(&mut self) {
+          self.0.update(|v| !v)
+        }
+        
+      }
+      let _: Result<_, _> = catch_unwind(|| {
+        let _: Src<[DropFlagger<'_>]> = Src::from_fn(drop_flags.len(), |i| {
+          if i >= 3 { panic!() }
+          DropFlagger(&drop_flags[i])
+        });
+      });
+      assert!(drop_flags[..3].iter().map(Deref::deref).all(Cell::get));
+      assert!(!drop_flags[3..].iter().map(Deref::deref).any(Cell::get));
+    }
+  }
+  
+  #[test]
+  fn cyclic_from_fn() {
+    { // normal, not cyclic
+      let s: Src<[usize]> = Src::cyclic_from_fn(3, |_, i| i * 2);
+      assert_eq!(*s, [0, 2, 4]);
+    }
+    { // normal, cyclic
+      struct S {
+        
+        all: WeakSrc<[S]>,
+        i: usize,
+        
+      }
+      let s1: Src<[S]> = Src::cyclic_from_fn(3, |w, i| S { all: w.clone(), i: i * 2 });
+      assert_eq!(s1[0].i, 0);
+      assert_eq!(s1[1].i, 2);
+      assert_eq!(s1[2].i, 4);
+      let s2: Src<[S]> = s1[0].all.upgrade().unwrap();
+      assert!(Src::ptr_eq(&s1, &s2));
+    }
+    { // panic
+      let drop_flags: [_; 6] = std::array::from_fn(|_| AssertUnwindSafe(Cell::new(false)));
+      struct DropFlagger<'a>(&'a Cell<bool>);
+      impl Drop for DropFlagger<'_> {
+        
+        fn drop(&mut self) {
+          self.0.update(|v| !v)
+        }
+        
+      }
+      let _: Result<_, _> = catch_unwind(|| {
+        let _: Src<[DropFlagger<'_>]> = Src::cyclic_from_fn(drop_flags.len(), |_, i| {
+          if i >= 3 { panic!() }
+          DropFlagger(&drop_flags[i])
+        });
+      });
+      assert!(drop_flags[..3].iter().map(Deref::deref).all(Cell::get));
+      assert!(!drop_flags[3..].iter().map(Deref::deref).any(Cell::get));
+    }
+  }
+  
+  #[test]
+  fn from_iter() {
+    let s: Src<[u8]> = Src::from_iter(vec![1, 2, 3].into_iter().map(|i| i * 2));
+    assert_eq!(*s, [2, 4, 6]);
+  }
+  
+  #[test]
+  fn from_array() {
+    let s: Src<[u8]> = Src::from_array([1, 2, 3]);
+    assert_eq!(*s, [1, 2, 3]);
+  }
+  
+  #[test]
+  fn from_default() {
+    #[derive(Copy, Clone, Eq, PartialEq, Debug)]
+    struct D42(u8);
+    impl Default for D42 {
+      
+      fn default() -> Self {
+        Self(42)
+      }
+      
+    }
+    let s: Src<[u8]> = Src::from_default(3);
+    assert_eq!(*s, [0, 0, 0]);
+    let s: Src<[D42]> = Src::from_default(3);
+    assert_eq!(*s, [D42(42), D42(42), D42(42)]);
+  }
+  
+  #[test]
+  fn filled() {
+    let s: Src<[u8]> = Src::filled(3, &42);
+    assert_eq!(*s, [42, 42, 42]);
+  }
+  
+  #[test]
+  fn cloned() {
+    #[derive(Clone, Eq, PartialEq, Debug)]
+    struct NonCopy(u8);
+    let s: Src<[NonCopy]> = Src::cloned(&[NonCopy(1), NonCopy(2), NonCopy(3)]);
+    assert_eq!(*s, [NonCopy(1), NonCopy(2), NonCopy(3)]);
+  }
+  
+  #[test]
+  fn copied() {
+    let s: Src<[u8]> = Src::copied(&[1, 2, 3]);
+    assert_eq!(*s, [1, 2, 3]);
+  }
+  
+  #[test]
+  fn assume_init_single() {
+    let s: Src<MaybeUninit<u8>> = Src::single_zeroed();
+    // SAFETY: u8 is a zeroable type
+    let s: Src<u8> = unsafe { s.assume_init() };
+    assert_eq!(*s, 0);
+  }
+  
+  #[test]
+  fn assume_init_slice() {
+    let s: Src<[MaybeUninit<u8>]> = Src::new_uninit(3);
+    // SAFETY: u8 is a zeroable type
+    let s: Src<[u8]> = unsafe { s.assume_init() };
+    assert_eq!(*s, [0, 0, 0]);
+  }
+  
+  #[test]
+  fn new() {
+    let s: Src<str> = Src::new("Hello World!");
+    assert_eq!(&*s, "Hello World!");
+  }
+  
+  #[test]
+  fn from_utf8() {
+    { // UTF-8
+      let s: Src<[u8]> = Src::copied(b"Hello World!");
+      let s: Src<str> = Src::from_utf8(s).unwrap();
+      assert_eq!(&*s, "Hello World!");
+    }
+    { // not UTF-8
+      let s: Src<[u8]> = Src::copied(&[0xFF]);
+      let _: Utf8Error = Src::from_utf8(s).unwrap_err();
+    }
+  }
+  
+  #[test]
+  fn from_utf8_unchecked() {
+    let s: Src<[u8]> = Src::copied(b"Hello World!");
+    // SAFETY: just got the bytes from a str
+    let s: Src<str> = unsafe { Src::from_utf8_unchecked(s) };
+    assert_eq!(&*s, "Hello World!");
+  }
+  
+  #[test]
+  fn as_bytes() {
+    let s: Src<str> = Src::new("Hello World!");
+    let s: Src<[u8]> = Src::as_bytes(s);
+    assert_eq!(&*s, b"Hello World!");
+  }
+  
+  #[test]
+  fn clone() {
+    let s1: Src<[u8]> = Src::from_array([1, 2, 3]);
+    assert_eq!(Src::strong_count(&s1), 1);
+    let s2: Src<[u8]> = s1.clone();
+    assert_eq!(Src::strong_count(&s1), 2);
+    assert_eq!(*s1, *s2);
+    assert!(Src::ptr_eq(&s1, &s2));
+  }
+  
+  #[test]
+  fn deref() {
+    let s: Src<[u8]> = Src::from_array([1, 2, 3]);
+    assert_eq!(Deref::deref(&s), &[1, 2, 3]);
+  }
+  
+  #[test]
+  fn drop() {
+    let drop_flags: [_; 3] = std::array::from_fn(|_| Cell::new(false));
+    struct DropFlagger<'a>(&'a Cell<bool>);
+    impl Drop for DropFlagger<'_> {
+      
+      fn drop(&mut self) {
+        self.0.update(|v| !v)
+      }
+      
+    }
+    assert!(!drop_flags.iter().any(Cell::get));
+    let s1: Src<[DropFlagger<'_>]> = Src::from_iter(drop_flags.iter().map(DropFlagger));
+    assert!(!drop_flags.iter().any(Cell::get));
+    assert_eq!(Src::strong_count(&s1), 1);
+    let s2: Src<[DropFlagger<'_>]> = s1.clone();
+    assert!(!drop_flags.iter().any(Cell::get));
+    assert_eq!(Src::strong_count(&s1), 2);
+    assert_eq!(Src::strong_count(&s2), 2);
+    std::mem::drop(s1);
+    assert!(!drop_flags.iter().any(Cell::get));
+    assert_eq!(Src::strong_count(&s2), 1);
+    std::mem::drop(s2);
+    assert!(drop_flags.iter().all(Cell::get));
+  }
+  
+}
