@@ -1087,7 +1087,7 @@ mod tests {
   
   #[test]
   fn assume_init_slice() {
-    let s: Src<[MaybeUninit<u8>]> = Src::new_uninit(3);
+    let s: Src<[MaybeUninit<u8>]> = Src::new_zeroed(3);
     // SAFETY: u8 is a zeroable type
     let s: Src<[u8]> = unsafe { s.assume_init() };
     assert_eq!(*s, [0, 0, 0]);
