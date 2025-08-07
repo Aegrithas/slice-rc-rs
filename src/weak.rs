@@ -1,11 +1,9 @@
-use std::{fmt::{self, Debug, Formatter, Pointer}, marker::PhantomData, mem::forget, ops::Bound, ptr::{without_provenance_mut, NonNull}};
+use std::{fmt::{self, Debug, Formatter, Pointer}, marker::PhantomData, mem::forget, num::NonZero, ops::Bound, ptr::NonNull};
 
 use crate::{inner::InnerHeader, Src, SrcIndex, SrcSlice, SrcTarget};
 
 const fn non_null_max<T>() -> NonNull<T> {
-  let max_ptr = without_provenance_mut(usize::MAX);
-  // SAFETY: usize::MAX != 0usize
-  unsafe { NonNull::new_unchecked(max_ptr) }
+  NonNull::without_provenance(NonZero::<usize>::MAX)
 }
 
 pub struct WeakSrc<T: SrcTarget + ?Sized> {

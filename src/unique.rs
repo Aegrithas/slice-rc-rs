@@ -243,8 +243,7 @@ impl<T> UniqueSrc<[T]> {
     // * we just got this from InnerHeader::new_inner::<T>
     // * no one else has seen the ptr yet, so the read/write requirements are fine
     let start = unsafe { InnerHeader::get_body_ptr::<T>(header) };
-    // SAFETY: references can't be null
-    let values = unsafe { NonNull::new_unchecked(values.as_ptr().cast_mut()) };
+    let values = NonNull::from_ref(values).cast();
     // SAFETY:
     // * values is from a reference, and is therefore valid
     // * InnerHeader::new_inner::<T>(len) guarantees that start is valid for len * size_of::<T>() bytes and aligned for T
