@@ -721,6 +721,8 @@ mod tests {
     assert_eq!(s.len(), 1);
     let s: Src<[u8]> = Src::from_default(17);
     assert_eq!(s.len(), 17);
+    let s: Src<[u8]> = s.into_slice(3..14);
+    assert_eq!(s.len(), 11);
   }
   
   #[test]
