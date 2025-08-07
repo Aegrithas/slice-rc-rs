@@ -723,6 +723,8 @@ mod tests {
     assert_eq!(s.len(), 17);
     let s: Src<[u8]> = s.into_slice(3..14);
     assert_eq!(s.len(), 11);
+    let s: Src<[u8]> = s.into_slice(3..3);
+    assert_eq!(s.len(), 0);
   }
   
   #[test]
@@ -733,6 +735,10 @@ mod tests {
     assert!(!s.is_empty());
     let s: Src<[u8]> = Src::from_default(17);
     assert!(!s.is_empty());
+    let s: Src<[u8]> = s.into_slice(3..14);
+    assert!(!s.is_empty());
+    let s: Src<[u8]> = s.into_slice(3..3);
+    assert!(s.is_empty());
   }
   
   #[test]
