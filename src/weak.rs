@@ -343,3 +343,559 @@ impl<T: SrcTarget + ?Sized> Drop for WeakSrc<T> {
   }
   
 }
+
+#[cfg(test)]
+mod tests {
+  
+  use std::cell::Cell;
+  use crate::*;
+  
+  #[test]
+  fn dangling() {
+    let w: WeakSrc<[u8]> = WeakSrc::dangling();
+    assert!(w.is_dangling());
+    assert!(w.upgrade().is_none());
+  }
+  
+  #[test]
+  fn is_dangling() {
+    { // dangling
+      let w: WeakSrc<[u8]> = WeakSrc::dangling();
+      assert!(w.is_dangling());
+    }
+    { // not dangling
+      let s: Src<[u8]> = Src::from_default(0);
+      let w: WeakSrc<[u8]> = Src::downgrade(&s);
+      assert!(!w.is_dangling());
+      std::mem::drop(s);
+      assert!(!w.is_dangling());
+    }
+  }
+  
+  #[test]
+  fn upgrade() {
+    { // dangling
+      let w: WeakSrc<[u8]> = WeakSrc::dangling();
+      assert!(w.upgrade().is_none());
+    }
+    { // not dangling
+      let s1: Src<[u8]> = Src::from_default(0);
+      let w: WeakSrc<[u8]> = Src::downgrade(&s1);
+      let s2: Src<[u8]> = w.upgrade().unwrap();
+      assert!(Src::ptr_eq(&s1, &s2));
+    }
+  }
+  
+  #[test]
+  fn ptr_eq() {
+    { // dangling
+      let w1: WeakSrc<[u8]> = WeakSrc::dangling();
+      let w2: WeakSrc<[u8]> = WeakSrc::dangling();
+      assert!(w1.ptr_eq(&w2));
+    }
+    { // not dangling, same root
+      let s: Src<[u8]> = Src::from_default(1);
+      let w1: WeakSrc<[u8]> = Src::downgrade(&s);
+      let w2: WeakSrc<[u8]> = w1.clone();
+      assert!(w1.ptr_eq(&w2));
+      let w3: WeakSrc<[u8]> = WeakSrc::dangling();
+      assert!(!w1.ptr_eq(&w3));
+      assert!(!w2.ptr_eq(&w3));
+      let w4: WeakSrc<[u8]> = s.downgrade_slice(1..);
+      let w5: WeakSrc<[u8]> = s.downgrade_slice(1..);
+      assert!(w4.ptr_eq(&w5));
+      assert!(!w4.ptr_eq(&w1));
+      assert!(!w4.ptr_eq(&w3));
+    }
+    { // not dangling, different roots
+      let s1: Src<[u8]> = Src::from_default(0);
+      let w1: WeakSrc<[u8]> = Src::downgrade(&s1);
+      let s2: Src<[u8]> = Src::from_default(0);
+      let w2: WeakSrc<[u8]> = Src::downgrade(&s2);
+      assert!(!w1.ptr_eq(&w2));
+      let w3: WeakSrc<[u8]> = WeakSrc::dangling();
+      assert!(!w1.ptr_eq(&w3));
+      assert!(!w2.ptr_eq(&w3));
+      std::mem::drop((s1, s2));
+      assert!(!w1.ptr_eq(&w3));
+      assert!(!w2.ptr_eq(&w3));
+    }
+  }
+  
+  #[test]
+  fn same_root() {
+    { // dangling
+      let w1: WeakSrc<[u8]> = WeakSrc::dangling();
+      let w2: WeakSrc<[u8]> = WeakSrc::dangling();
+      assert!(w1.same_root(&w2));
+    }
+    { // not dangling, same root
+      let s: Src<[u8]> = Src::from_default(1);
+      let w1: WeakSrc<[u8]> = Src::downgrade(&s);
+      let w2: WeakSrc<[u8]> = w1.clone();
+      assert!(w1.same_root(&w2));
+      let w3: WeakSrc<[u8]> = WeakSrc::dangling();
+      assert!(!w1.same_root(&w3));
+      assert!(!w2.same_root(&w3));
+      let w4: WeakSrc<[u8]> = s.downgrade_slice(1..);
+      assert!(w4.same_root(&w1));
+      assert!(!w4.same_root(&w3));
+    }
+    { // not dangling, different roots
+      let s1: Src<[u8]> = Src::from_default(0);
+      let w1: WeakSrc<[u8]> = Src::downgrade(&s1);
+      let s2: Src<[u8]> = Src::from_default(0);
+      let w2: WeakSrc<[u8]> = Src::downgrade(&s2);
+      assert!(!w1.same_root(&w2));
+      let w3: WeakSrc<[u8]> = WeakSrc::dangling();
+      assert!(!w1.same_root(&w3));
+      assert!(!w2.same_root(&w3));
+      std::mem::drop((s1, s2));
+      assert!(!w1.same_root(&w3));
+      assert!(!w2.same_root(&w3));
+    }
+  }
+  
+  #[test]
+  fn is_root() {
+    { // dangling
+      let w: WeakSrc<[u8]> = WeakSrc::dangling();
+      assert!(w.is_root());
+    }
+    {
+      let s: Src<[u8]> = Src::from_default(1);
+      let w1: WeakSrc<[u8]> = Src::downgrade(&s);
+      assert!(w1.is_root());
+      let w2: WeakSrc<[u8]> = s.downgrade_slice(1..);
+      assert!(!w2.is_root());
+      std::mem::drop(s);
+      assert!(w1.is_root());
+      assert!(!w2.is_root());
+    }
+  }
+  
+  #[test]
+  fn strong_count() {
+    { // dangling
+      let w: WeakSrc<[u8]> = WeakSrc::dangling();
+      assert_eq!(w.strong_count(), 0);
+    }
+    { // not dangling
+      let s1: Src<[u8]> = Src::from_default(0);
+      let w: WeakSrc<[u8]> = Src::downgrade(&s1);
+      assert_eq!(w.strong_count(), 1);
+      let s2: Src<[u8]> = s1.clone();
+      assert_eq!(w.strong_count(), 2);
+      std::mem::drop(s1);
+      assert_eq!(w.strong_count(), 1);
+      std::mem::drop(s2);
+      assert_eq!(w.strong_count(), 0);
+    }
+  }
+  
+  #[test]
+  fn weak_count() {
+    { // dangling
+      let w: WeakSrc<[u8]> = WeakSrc::dangling();
+      assert_eq!(w.weak_count(), 0);
+    }
+    { // not dangling
+      let s: Src<[u8]> = Src::from_default(0);
+      let w1: WeakSrc<[u8]> = Src::downgrade(&s);
+      assert_eq!(w1.weak_count(), 1);
+      let w2: WeakSrc<[u8]> = w1.clone();
+      assert_eq!(w1.weak_count(), 2);
+      assert_eq!(w2.weak_count(), 2);
+      let w3: WeakSrc<[u8]> = Src::downgrade(&s);
+      assert_eq!(w1.weak_count(), 3);
+      assert_eq!(w2.weak_count(), 3);
+      assert_eq!(w3.weak_count(), 3);
+      std::mem::drop(w1);
+      assert_eq!(w2.weak_count(), 2);
+      assert_eq!(w3.weak_count(), 2);
+      std::mem::drop(s);
+      assert_eq!(w2.weak_count(), 0);
+      assert_eq!(w3.weak_count(), 0);
+    }
+  }
+  
+  #[test]
+  fn len() {
+    { // dangling
+      let w: WeakSrc<[u8]> = WeakSrc::dangling();
+      assert_eq!(w.len(), 0);
+    }
+    { // not dangling
+      let s: Src<[u8]> = Src::from_default(0);
+      let w: WeakSrc<[u8]> = Src::downgrade(&s);
+      assert_eq!(w.len(), 0);
+      let s: Src<[u8]> = Src::from_default(1);
+      let w: WeakSrc<[u8]> = Src::downgrade(&s);
+      assert_eq!(w.len(), 1);
+      let s: Src<[u8]> = Src::from_default(17);
+      let w: WeakSrc<[u8]> = Src::downgrade(&s);
+      assert_eq!(w.len(), 17);
+      let w: WeakSrc<[u8]> = w.into_slice(3..14);
+      assert_eq!(w.len(), 11);
+      let w: WeakSrc<[u8]> = w.into_slice(3..3);
+      assert_eq!(w.len(), 0);
+    }
+  }
+  
+  #[test]
+  fn is_empty() {
+    { // dangling
+      let w: WeakSrc<[u8]> = WeakSrc::dangling();
+      assert!(w.is_empty());
+    }
+    { // not dangling
+      let s: Src<[u8]> = Src::from_default(0);
+      let w: WeakSrc<[u8]> = Src::downgrade(&s);
+      assert!(w.is_empty());
+      let s: Src<[u8]> = Src::from_default(1);
+      let w: WeakSrc<[u8]> = Src::downgrade(&s);
+      assert!(!w.is_empty());
+      let s: Src<[u8]> = Src::from_default(17);
+      let w: WeakSrc<[u8]> = Src::downgrade(&s);
+      assert!(!w.is_empty());
+      let w: WeakSrc<[u8]> = w.into_slice(3..14);
+      assert!(!w.is_empty());
+      let w: WeakSrc<[u8]> = w.into_slice(3..3);
+      assert!(w.is_empty());
+    }
+  }
+  
+  #[test]
+  fn into_root() {
+    { // dangling
+      let w1: WeakSrc<[u8]> = WeakSrc::dangling();
+      let w2: WeakSrc<[u8]> = w1.clone().into_root();
+      assert!(w2.is_root());
+      assert!(w1.ptr_eq(&w2));
+    }
+    { // not dangling
+      let s: Src<[u8]> = Src::from_default(1);
+      let w: WeakSrc<[u8]> = Src::downgrade(&s);
+      assert!(w.is_root());
+      let w: WeakSrc<[u8]> = w.into_slice(1..);
+      assert!(!w.is_root());
+      let w: WeakSrc<[u8]> = w.into_root();
+      assert!(w.is_root());
+    }
+  }
+  
+  #[test]
+  fn clone_root() {
+    { // dangling
+      let w1: WeakSrc<[u8]> = WeakSrc::dangling();
+      let w2: WeakSrc<[u8]> = w1.clone_root();
+      assert!(w2.is_root());
+      assert!(w1.ptr_eq(&w2));
+    }
+    { // not dangling
+      let s: Src<[u8]> = Src::from_default(1);
+      let w: WeakSrc<[u8]> = Src::downgrade(&s);
+      assert!(w.is_root());
+      let w: WeakSrc<[u8]> = w.into_slice(1..);
+      assert!(!w.is_root());
+      let w: WeakSrc<[u8]> = w.clone_root();
+      assert!(w.is_root());
+    }
+  }
+  
+  #[test]
+  fn upgrade_root() {
+    { // dangling
+      let w1: WeakSrc<[u8]> = WeakSrc::dangling();
+      assert!(w1.clone().upgrade_root().is_none());
+    }
+    { // not dangling
+      let s: Src<[u8]> = Src::from_default(1);
+      let w: WeakSrc<[u8]> = Src::downgrade(&s);
+      assert!(w.is_root());
+      let w: WeakSrc<[u8]> = w.into_slice(1..);
+      assert!(!w.is_root());
+      let s: Src<[u8]> = w.upgrade_root().unwrap();
+      assert!(Src::is_root(&s));
+      let w: WeakSrc<[u8]> = Src::downgrade(&s);
+      assert!(w.is_root());
+    }
+  }
+  
+  #[test]
+  #[should_panic]
+  fn into_slice_dangling() {
+    let w: WeakSrc<[u8]> = WeakSrc::dangling();
+    let _: WeakSrc<[u8]> = w.into_slice(..);
+  }
+  
+  #[test]
+  fn into_slice() {
+    { // slice
+      let s: Src<[u8]> = Src::from_array([1, 2, 3]);
+      let w: WeakSrc<[u8]> = Src::downgrade(&s);
+      let s: Src<[u8]> = w.upgrade().unwrap();
+      assert_eq!(&*s, &[1, 2, 3]);
+      let w: WeakSrc<[u8]> = w.into_slice(1..);
+      let s: Src<[u8]> = w.upgrade().unwrap();
+      assert_eq!(&*s, &[2, 3]);
+      let w: WeakSrc<[u8]> = w.into_slice(..1);
+      let s: Src<[u8]> = w.upgrade().unwrap();
+      assert_eq!(&*s, &[2]);
+    }
+    { // item 1
+      let s: Src<[u8]> = Src::from_array([1, 2, 3]);
+      let w: WeakSrc<[u8]> = Src::downgrade(&s);
+      let s: Src<[u8]> = w.upgrade().unwrap();
+      assert_eq!(&*s, &[1, 2, 3]);
+      let w: WeakSrc<u8> = w.into_slice(2);
+      let s: Src<u8> = w.upgrade().unwrap();
+      assert_eq!(&*s, &3);
+    }
+    { // item 2
+      let s: Src<[u8]> = Src::from_array([1, 2, 3]);
+      let w: WeakSrc<[u8]> = Src::downgrade(&s);
+      let s: Src<[u8]> = w.upgrade().unwrap();
+      assert_eq!(&*s, &[1, 2, 3]);
+      let w: WeakSrc<[u8]> = w.into_slice(1..);
+      let s: Src<[u8]> = w.upgrade().unwrap();
+      assert_eq!(&*s, &[2, 3]);
+      let w: WeakSrc<u8> = w.into_slice(0);
+      let s: Src<u8> = w.upgrade().unwrap();
+      assert_eq!(&*s, &2);
+    }
+  }
+  
+  #[test]
+  #[should_panic]
+  fn clone_slice_dangling() {
+    let w: WeakSrc<[u8]> = WeakSrc::dangling();
+    let _: WeakSrc<[u8]> = w.clone_slice(..);
+  }
+  
+  #[test]
+  fn clone_slice() {
+    { // slice
+      let s1: Src<[u8]> = Src::from_array([1, 2, 3]);
+      let w1: WeakSrc<[u8]> = Src::downgrade(&s1);
+      let s1: Src<[u8]> = w1.upgrade().unwrap();
+      assert_eq!(&*s1, &[1, 2, 3]);
+      let w1: WeakSrc<[u8]> = w1.into_slice(1..);
+      let s1: Src<[u8]> = w1.upgrade().unwrap();
+      assert_eq!(&*s1, &[2, 3]);
+      let w2: WeakSrc<[u8]> = w1.clone_slice(..1);
+      let s2: Src<[u8]> = w2.upgrade().unwrap();
+      assert_eq!(&*s2, &[2]);
+      assert!(w1.same_root(&w2));
+    }
+    { // item 1
+      let s1: Src<[u8]> = Src::from_array([1, 2, 3]);
+      let w1: WeakSrc<[u8]> = Src::downgrade(&s1);
+      let s1: Src<[u8]> = w1.upgrade().unwrap();
+      assert_eq!(&*s1, &[1, 2, 3]);
+      let w2: WeakSrc<u8> = w1.clone_slice(2);
+      let s2: Src<u8> = w2.upgrade().unwrap();
+      assert_eq!(&*s2, &3);
+      let w2: WeakSrc<[u8]> = WeakSrc::as_slice(w2);
+      let s2: Src<[u8]> = w2.upgrade().unwrap();
+      assert_eq!(&*s2, &[3]);
+      assert!(w1.same_root(&w2));
+    }
+    { // item 2
+      let s1: Src<[u8]> = Src::from_array([1, 2, 3]);
+      let w1: WeakSrc<[u8]> = Src::downgrade(&s1);
+      let s1: Src<[u8]> = w1.upgrade().unwrap();
+      assert_eq!(&*s1, &[1, 2, 3]);
+      let w1: WeakSrc<[u8]> = w1.into_slice(1..);
+      let s1: Src<[u8]> = w1.upgrade().unwrap();
+      assert_eq!(&*s1, &[2, 3]);
+      let w2: WeakSrc<u8> = w1.clone_slice(0);
+      let s2: Src<u8> = w2.upgrade().unwrap();
+      assert_eq!(&*s2, &2);
+      let w2: WeakSrc<[u8]> = WeakSrc::as_slice(w2);
+      let s2: Src<[u8]> = w2.upgrade().unwrap();
+      assert_eq!(&*s2, &[2]);
+      assert!(w1.same_root(&w2));
+    }
+  }
+  
+  #[test]
+  fn upgrade_slice() {
+    { // dangling
+      let w: WeakSrc<[u8]> = WeakSrc::dangling();
+      assert!(w.upgrade_slice(..).is_none());
+    }
+    { // slice
+      let s1: Src<[u8]> = Src::from_array([1, 2, 3]);
+      let w1: WeakSrc<[u8]> = Src::downgrade(&s1);
+      let s1: Src<[u8]> = w1.upgrade().unwrap();
+      assert_eq!(&*s1, &[1, 2, 3]);
+      let w1: WeakSrc<[u8]> = w1.into_slice(1..);
+      let s1: Src<[u8]> = w1.upgrade().unwrap();
+      assert_eq!(&*s1, &[2, 3]);
+      let s2: Src<[u8]> = w1.upgrade_slice(..1).unwrap();
+      let w2: WeakSrc<[u8]> = Src::downgrade(&s2);
+      assert_eq!(&*s2, &[2]);
+      assert!(w1.same_root(&w2));
+    }
+    { // item 1
+      let s1: Src<[u8]> = Src::from_array([1, 2, 3]);
+      let w1: WeakSrc<[u8]> = Src::downgrade(&s1);
+      let s1: Src<[u8]> = w1.upgrade().unwrap();
+      assert_eq!(&*s1, &[1, 2, 3]);
+      let s2: Src<u8> = w1.upgrade_slice(2).unwrap();
+      let w2: WeakSrc<u8> = Src::downgrade(&s2);
+      assert_eq!(&*s2, &3);
+      let w2: WeakSrc<[u8]> = WeakSrc::as_slice(w2);
+      let s2: Src<[u8]> = w2.upgrade().unwrap();
+      assert_eq!(&*s2, &[3]);
+      assert!(w1.same_root(&w2));
+    }
+    { // item 2
+      let s1: Src<[u8]> = Src::from_array([1, 2, 3]);
+      let w1: WeakSrc<[u8]> = Src::downgrade(&s1);
+      let s1: Src<[u8]> = w1.upgrade().unwrap();
+      assert_eq!(&*s1, &[1, 2, 3]);
+      let w1: WeakSrc<[u8]> = w1.into_slice(1..);
+      let s1: Src<[u8]> = w1.upgrade().unwrap();
+      assert_eq!(&*s1, &[2, 3]);
+      let s2: Src<u8> = w1.upgrade_slice(0).unwrap();
+      let w2: WeakSrc<u8> = Src::downgrade(&s2);
+      assert_eq!(&*s2, &2);
+      let w2: WeakSrc<[u8]> = WeakSrc::as_slice(w2);
+      let s2: Src<[u8]> = w2.upgrade().unwrap();
+      assert_eq!(&*s2, &[2]);
+      assert!(w1.same_root(&w2));
+    }
+  }
+  
+  #[test]
+  fn as_slice() {
+    { // dangling
+      let w: WeakSrc<u8> = WeakSrc::dangling();
+      let w: WeakSrc<[u8]> = w.as_slice();
+      assert!(w.is_dangling());
+    }
+    { // single root
+      let s1: Src<u8> = Src::single(42);
+      let w1: WeakSrc<u8> = Src::downgrade(&s1);
+      let w2: WeakSrc<[u8]> = w1.clone().as_slice();
+      let s2: Src<[u8]> = w2.upgrade().unwrap();
+      assert_eq!([*s1], *s2);
+    }
+    { // from slice
+      let s1: Src<[u8]> = Src::from_array([1, 2, 3]);
+      let w1: WeakSrc<[u8]> = Src::downgrade(&s1);
+      let w2: WeakSrc<u8> = w1.clone_slice(1);
+      let s2: Src<u8> = w2.upgrade().unwrap();
+      let w3: WeakSrc<[u8]> = w2.clone().as_slice();
+      let s3: Src<[u8]> = w3.upgrade().unwrap();
+      assert_eq!(s1[1], *s2);
+      assert_eq!([*s2], *s3);
+    }
+  }
+  
+  #[test]
+  fn clone_as_slice() {
+    { // dangling
+      let w: WeakSrc<u8> = WeakSrc::dangling();
+      let w: WeakSrc<[u8]> = w.clone_as_slice();
+      assert!(w.is_dangling());
+    }
+    { // single root
+      let s1: Src<u8> = Src::single(42);
+      let w1: WeakSrc<u8> = Src::downgrade(&s1);
+      let w2: WeakSrc<[u8]> = w1.clone_as_slice();
+      let s2: Src<[u8]> = w2.upgrade().unwrap();
+      assert_eq!([*s1], *s2);
+    }
+    { // from slice
+      let s1: Src<[u8]> = Src::from_array([1, 2, 3]);
+      let w1: WeakSrc<[u8]> = Src::downgrade(&s1);
+      let w2: WeakSrc<u8> = w1.clone_slice(1);
+      let s2: Src<u8> = w2.upgrade().unwrap();
+      let w3: WeakSrc<[u8]> = w2.clone_as_slice();
+      let s3: Src<[u8]> = w3.upgrade().unwrap();
+      assert_eq!(s1[1], *s2);
+      assert_eq!([*s2], *s3);
+    }
+  }
+  
+  #[test]
+  fn upgrade_as_slice() {
+    { // dangling
+      let w: WeakSrc<u8> = WeakSrc::dangling();
+      assert!(w.upgrade_as_slice().is_none());
+    }
+    { // single root
+      let s1: Src<u8> = Src::single(42);
+      let w1: WeakSrc<u8> = Src::downgrade(&s1);
+      let s2: Src<[u8]> = w1.upgrade_as_slice().unwrap();
+      assert_eq!([*s1], *s2);
+    }
+    { // from slice
+      let s1: Src<[u8]> = Src::from_array([1, 2, 3]);
+      let w1: WeakSrc<[u8]> = Src::downgrade(&s1);
+      let w2: WeakSrc<u8> = w1.clone_slice(1);
+      let s2: Src<u8> = w2.upgrade().unwrap();
+      let s3: Src<[u8]> = w2.upgrade_as_slice().unwrap();
+      assert_eq!(s1[1], *s2);
+      assert_eq!([*s2], *s3);
+    }
+  }
+  
+  #[test]
+  fn clone() {
+    { // dangling
+      let w1: WeakSrc<[u8]> = WeakSrc::dangling();
+      assert_eq!(w1.weak_count(), 0);
+      let w2: WeakSrc<[u8]> = w1.clone();
+      assert_eq!(w1.weak_count(), 0);
+      assert_eq!(w2.weak_count(), 0);
+    }
+    { // not dangling
+      let s1: Src<[u8]> = Src::from_array([1, 2, 3]);
+      let w1: WeakSrc<[u8]> = Src::downgrade(&s1);
+      assert_eq!(w1.weak_count(), 1);
+      let w2: WeakSrc<[u8]> = w1.clone();
+      assert_eq!(w1.weak_count(), 2);
+      let s2: Src<[u8]> = w2.upgrade().unwrap();
+      assert_eq!(*s1, *s2);
+      assert!(w1.ptr_eq(&w2));
+      std::mem::drop((s1, s2));
+      assert_eq!(w1.weak_count(), 0);
+    }
+  }
+  
+  #[test]
+  fn drop() {
+    let drop_flags: [_; 3] = std::array::from_fn(|_| Cell::new(false));
+    struct DropFlagger<'a>(&'a Cell<bool>);
+    impl Drop for DropFlagger<'_> {
+      
+      fn drop(&mut self) {
+        self.0.update(|v| !v)
+      }
+      
+    }
+    assert!(!drop_flags.iter().any(Cell::get));
+    let s: Src<[DropFlagger<'_>]> = Src::from_iter(drop_flags.iter().map(DropFlagger));
+    assert!(!drop_flags.iter().any(Cell::get));
+    let w1: WeakSrc<[DropFlagger<'_>]> = Src::downgrade(&s);
+    assert!(!drop_flags.iter().any(Cell::get));
+    assert_eq!(w1.weak_count(), 1);
+    let w2: WeakSrc<[DropFlagger<'_>]> = w1.clone();
+    assert!(!drop_flags.iter().any(Cell::get));
+    assert_eq!(w1.weak_count(), 2);
+    assert_eq!(w2.weak_count(), 2);
+    std::mem::drop(w1);
+    assert!(!drop_flags.iter().any(Cell::get));
+    assert_eq!(w2.weak_count(), 1);
+    std::mem::drop(s);
+    assert!(drop_flags.iter().all(Cell::get));
+    assert_eq!(w2.weak_count(), 0);
+    std::mem::drop(w2);
+    assert!(drop_flags.iter().all(Cell::get));
+  }
+  
+}
