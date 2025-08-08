@@ -264,6 +264,7 @@ impl<T> Drop for PartialInitGuard<T> {
 #[cfg(test)]
 mod tests {
   
+  use std::{cell::Cell, ops::Deref, panic::{catch_unwind, AssertUnwindSafe}};
   use crate::*;
   
   #[test]
@@ -380,16 +381,60 @@ mod tests {
   
   #[test]
   fn init_from_fn() {
-    let u: UninitSrc<[u8]> = UninitSrc::new(3);
-    let s: Src<[u8]> = u.init_from_fn(|i| i as _);
-    assert_eq!(*s, [0, 1, 2]);
+    { // normal
+      let u: UninitSrc<[u8]> = UninitSrc::new(3);
+      let s: Src<[u8]> = u.init_from_fn(|i| i as _);
+      assert_eq!(*s, [0, 1, 2]);
+    }
+    { // panic
+      let drop_flags: [_; 6] = std::array::from_fn(|_| AssertUnwindSafe(Cell::new(false)));
+      struct DropFlagger<'a>(&'a Cell<bool>);
+      impl Drop for DropFlagger<'_> {
+        
+        fn drop(&mut self) {
+          self.0.update(|v| !v)
+        }
+        
+      }
+      let _: Result<_, _> = catch_unwind(|| {
+        let u: UninitSrc<[DropFlagger<'_>]> = UninitSrc::new(drop_flags.len());
+        let _: Src<[DropFlagger<'_>]> = u.init_from_fn(|i| {
+          if i >= 3 { panic!() }
+          DropFlagger(&drop_flags[i])
+        });
+      });
+      assert!(drop_flags[..3].iter().map(Deref::deref).all(Cell::get));
+      assert!(!drop_flags[3..].iter().map(Deref::deref).any(Cell::get));
+    }
   }
   
   #[test]
   fn init_unique_from_fn() {
-    let u: UninitSrc<[u8]> = UninitSrc::new(3);
-    let u: UniqueSrc<[u8]> = u.init_unique_from_fn(|i| i as _);
-    assert_eq!(*u, [0, 1, 2]);
+    { // normal
+      let u: UninitSrc<[u8]> = UninitSrc::new(3);
+      let u: UniqueSrc<[u8]> = u.init_unique_from_fn(|i| i as _);
+      assert_eq!(*u, [0, 1, 2]);
+    }
+    { // panic
+      let drop_flags: [_; 6] = std::array::from_fn(|_| AssertUnwindSafe(Cell::new(false)));
+      struct DropFlagger<'a>(&'a Cell<bool>);
+      impl Drop for DropFlagger<'_> {
+        
+        fn drop(&mut self) {
+          self.0.update(|v| !v)
+        }
+        
+      }
+      let _: Result<_, _> = catch_unwind(|| {
+        let u: UninitSrc<[DropFlagger<'_>]> = UninitSrc::new(drop_flags.len());
+        let _: UniqueSrc<[DropFlagger<'_>]> = u.init_unique_from_fn(|i| {
+          if i >= 3 { panic!() }
+          DropFlagger(&drop_flags[i])
+        });
+      });
+      assert!(drop_flags[..3].iter().map(Deref::deref).all(Cell::get));
+      assert!(!drop_flags[3..].iter().map(Deref::deref).any(Cell::get));
+    }
   }
   
   #[test]
