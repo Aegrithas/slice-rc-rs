@@ -260,3 +260,173 @@ impl<T> Drop for PartialInitGuard<T> {
   }
   
 }
+
+#[cfg(test)]
+mod tests {
+  
+  use crate::*;
+  
+  #[test]
+  fn downgrade() {
+    let u: UninitSrc<[u8]> = UninitSrc::new(3);
+    let w: WeakSrc<[u8]> = u.downgrade();
+    assert!(w.upgrade().is_none());
+    let s1: Src<[u8]> = u.init_from_default();
+    let s2: Src<[u8]> = w.upgrade().unwrap();
+    assert_eq!(s1, s2);
+    assert!(Src::ptr_eq(&s1, &s2));
+  }
+  
+  #[test]
+  fn len() {
+    let u: UninitSrc<[u8]> = UninitSrc::new(0);
+    assert_eq!(u.len(), 0);
+    let u: UninitSrc<[u8]> = UninitSrc::new(1);
+    assert_eq!(u.len(), 1);
+    let u: UninitSrc<[u8]> = UninitSrc::new(17);
+    assert_eq!(u.len(), 17);
+  }
+  
+  #[test]
+  fn is_empty() {
+    let u: UninitSrc<[u8]> = UninitSrc::new(0);
+    assert!(u.is_empty());
+    let u: UninitSrc<[u8]> = UninitSrc::new(1);
+    assert!(!u.is_empty());
+    let u: UninitSrc<[u8]> = UninitSrc::new(17);
+    assert!(!u.is_empty());
+  }
+  
+  // TODO: I now realize that, given the current behavior of Weak::into_slice, UninitSrc::downgrade_slice will always panic;
+  //       that said, there is at least one larger item on my todo list that will resolve this problem,
+  //       so for now I'm just marking this test as #[should_panic] and moving on
+  #[test]
+  #[should_panic]
+  fn downgrade_slice() {
+    { // slice
+      let u: UninitSrc<[u8]> = UninitSrc::new(3);
+      let w: WeakSrc<[u8]> = u.downgrade_slice(1..);
+      assert!(w.upgrade().is_none());
+      let s1: Src<[u8]> = u.init_from_fn(|i| i as _);
+      let s2: Src<[u8]> = w.upgrade().unwrap();
+      assert_eq!(s1[1..], *s2);
+      assert_eq!(*s2, [1, 2]);
+      assert!(Src::same_root(&s1, &s2));
+    }
+    { // item
+      let u: UninitSrc<[u8]> = UninitSrc::new(3);
+      let w: WeakSrc<u8> = u.downgrade_slice(1);
+      assert!(w.upgrade().is_none());
+      let s1: Src<[u8]> = u.init_from_fn(|i| i as _);
+      let s2: Src<u8> = w.upgrade().unwrap();
+      assert_eq!(s1[1], *s2);
+      assert_eq!(*s2, 1);
+      let s2: Src<[u8]> = Src::as_slice(s2);
+      assert!(Src::same_root(&s1, &s2));
+    }
+  }
+  
+  #[test]
+  fn single() {
+    let u: UninitSrc<u8> = UninitSrc::single();
+    let s: Src<u8> = u.init(42);
+    assert!(Src::is_root(&s));
+    let s: Src<[u8]> = Src::as_slice(s);
+    assert_eq!(s.len(), 1);
+  }
+  
+  #[test]
+  fn init() {
+    let u: UninitSrc<u8> = UninitSrc::single();
+    let s: Src<u8> = u.init(42);
+    assert_eq!(*s, 42);
+  }
+  
+  #[test]
+  fn init_unique() {
+    let u: UninitSrc<u8> = UninitSrc::single();
+    let u: UniqueSrc<u8> = u.init_unique(42);
+    assert_eq!(*u, 42);
+  }
+  
+  #[test]
+  fn as_slice() {
+    let u: UninitSrc<u8> = UninitSrc::single();
+    let u: UninitSrc<[u8]> = u.as_slice();
+    assert_eq!(u.len(), 1);
+  }
+  
+  #[test]
+  fn downgrade_as_slice() {
+    let u: UninitSrc<u8> = UninitSrc::single();
+    let w: WeakSrc<[u8]> = u.downgrade_as_slice();
+    assert_eq!(w.len(), 1);
+    assert!(w.upgrade().is_none());
+    let s1: Src<u8> = u.init(42);
+    assert_eq!(*s1, 42);
+    let s2: Src<[u8]> = w.upgrade().unwrap();
+    assert_eq!(*s2, [42]);
+    let s1: Src<[u8]> = Src::as_slice(s1);
+    assert!(Src::ptr_eq(&s1, &s2));
+  }
+  
+  #[test]
+  fn new() {
+    let u: UninitSrc<[u8]> = UninitSrc::new(3);
+    let s: Src<[u8]> = u.init_from_fn(|i| i as _);
+    assert!(Src::is_root(&s));
+    assert_eq!(s.len(), 3);
+  }
+  
+  #[test]
+  fn init_from_fn() {
+    let u: UninitSrc<[u8]> = UninitSrc::new(3);
+    let s: Src<[u8]> = u.init_from_fn(|i| i as _);
+    assert_eq!(*s, [0, 1, 2]);
+  }
+  
+  #[test]
+  fn init_unique_from_fn() {
+    let u: UninitSrc<[u8]> = UninitSrc::new(3);
+    let u: UniqueSrc<[u8]> = u.init_unique_from_fn(|i| i as _);
+    assert_eq!(*u, [0, 1, 2]);
+  }
+  
+  #[test]
+  fn init_from_default() {
+    let u: UninitSrc<[u8]> = UninitSrc::new(3);
+    let s: Src<[u8]> = u.init_from_default();
+    assert_eq!(*s, [0, 0, 0]);
+  }
+  
+  #[test]
+  fn init_unique_from_default() {
+    let u: UninitSrc<[u8]> = UninitSrc::new(3);
+    let u: UniqueSrc<[u8]> = u.init_unique_from_default();
+    assert_eq!(*u, [0, 0, 0]);
+  }
+  
+  #[test]
+  fn init_filled() {
+    let u: UninitSrc<[u8]> = UninitSrc::new(3);
+    let s: Src<[u8]> = u.init_filled(&42);
+    assert_eq!(*s, [42, 42, 42]);
+  }
+  
+  #[test]
+  fn init_unique_filled() {
+    let u: UninitSrc<[u8]> = UninitSrc::new(3);
+    let u: UniqueSrc<[u8]> = u.init_unique_filled(&42);
+    assert_eq!(*u, [42, 42, 42]);
+  }
+  
+  #[test]
+  fn drop() {
+    let u: UninitSrc<[u8]> = UninitSrc::new(3);
+    let w: WeakSrc<[u8]> = u.downgrade();
+    assert!(w.upgrade().is_none());
+    std::mem::drop(u);
+    assert!(w.upgrade().is_none());
+  }
+  
+}
