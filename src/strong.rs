@@ -121,6 +121,11 @@ impl<T: SrcTarget + ?Sized> Src<T> {
 
 impl<T: SrcSlice + ?Sized> Src<T> {
   
+  #[inline]
+  pub fn empty() -> Src<T> {
+    UniqueSrc::into_shared(UniqueSrc::empty())
+  }
+  
   // technically unnecessary (because a self.deref().len() will get the same number), but potentially more efficient because there is no need to construct the whole slice
   #[inline]
   pub fn len(&self) -> usize {

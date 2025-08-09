@@ -66,6 +66,23 @@ impl<T: SrcTarget + ?Sized> UniqueSrc<T> {
 impl<T: SrcSlice + ?Sized> UniqueSrc<T> {
   
   #[inline]
+  pub fn empty() -> UniqueSrc<T> {
+    let this = UniqueSrc::<[T::Item]>::from_array([]);
+    debug_assert_eq!(this.len, 0);
+    let this2 = UniqueSrc {
+      // SAFETY: the safety invariant of this.header is the same as this2.header
+      header: this.header,
+      // SAFETY: the safety invariant of this.start is the same as this2.start
+      start: this.start,
+      // SAFETY: the safety invariant of this.len implies that of this.len
+      len: this.len,
+      _phantom: PhantomData,
+    };
+    forget(this);
+    this2
+  }
+  
+  #[inline]
   pub fn len(&self) -> usize {
     self.len
   }
