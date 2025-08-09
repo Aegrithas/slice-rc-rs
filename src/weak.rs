@@ -79,12 +79,12 @@ impl<T: SrcTarget + ?Sized> WeakSrc<T> {
   }
   
   #[inline]
-  pub fn ptr_eq(&self, other: &WeakSrc<T>) -> bool {
+  pub fn ptr_eq<U: SrcTarget<Item = T::Item> + ?Sized>(&self, other: &WeakSrc<U>) -> bool {
     self.start == other.start
   }
   
   #[inline]
-  pub fn same_root(&self, other: &WeakSrc<T>) -> bool {
+  pub fn same_root<U: SrcTarget<Item = T::Item> + ?Sized>(&self, other: &WeakSrc<U>) -> bool {
     self.header == other.header
   }
   
@@ -125,21 +125,7 @@ impl<T: SrcTarget + ?Sized> WeakSrc<T> {
     }
   }
   
-}
-
-impl<T: SrcSlice + ?Sized> WeakSrc<T> {
-  
-  #[inline]
-  pub fn len(&self) -> usize {
-    self.len
-  }
-  
-  #[inline]
-  pub fn is_empty(&self) -> bool {
-    self.len == 0
-  }
-  
-  pub fn into_root(self) -> WeakSrc<T> {
+  pub fn into_root(self) -> WeakSrc<[T::Item]> {
     if self.is_dangling() {
       return WeakSrc::dangling()
     }
@@ -163,13 +149,27 @@ impl<T: SrcSlice + ?Sized> WeakSrc<T> {
   }
   
   #[inline]
-  pub fn clone_root(&self) -> WeakSrc<T> {
+  pub fn clone_root(&self) -> WeakSrc<[T::Item]> {
     self.clone().into_root()
   }
   
   #[inline]
-  pub fn upgrade_root(&self) -> Option<Src<T>> {
+  pub fn upgrade_root(&self) -> Option<Src<[T::Item]>> {
     self.upgrade().map(Src::into_root)
+  }
+  
+}
+
+impl<T: SrcSlice + ?Sized> WeakSrc<T> {
+  
+  #[inline]
+  pub fn len(&self) -> usize {
+    self.len
+  }
+  
+  #[inline]
+  pub fn is_empty(&self) -> bool {
+    self.len == 0
   }
   
   #[inline]

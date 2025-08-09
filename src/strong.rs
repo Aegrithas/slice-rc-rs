@@ -33,12 +33,12 @@ impl<T: SrcTarget + ?Sized> Src<T> {
   }
   
   #[inline]
-  pub fn ptr_eq(this: &Src<T>, other: &Src<T>) -> bool {
+  pub fn ptr_eq<U: SrcTarget<Item = T::Item> + ?Sized>(this: &Src<T>, other: &Src<U>) -> bool {
     this.start == other.start
   }
   
   #[inline]
-  pub fn same_root(this: &Src<T>, other: &Src<T>) -> bool {
+  pub fn same_root<U: SrcTarget<Item = T::Item> + ?Sized>(this: &Src<T>, other: &Src<U>) -> bool {
     this.header == other.header
   }
   
@@ -99,22 +99,7 @@ impl<T: SrcTarget + ?Sized> Src<T> {
     Src::into_unique(this).unwrap_or_else(|this| T::new_unique_from_clone(&*this))
   }
   
-}
-
-impl<T: SrcSlice + ?Sized> Src<T> {
-  
-  // technically unnecessary (because a self.deref().len() will get the same number), but potentially more efficient because there is no need to construct the whole slice
-  #[inline]
-  pub fn len(&self) -> usize {
-    self.len
-  }
-  
-  #[inline]
-  pub fn is_empty(&self) -> bool {
-    self.len == 0
-  }
-  
-  pub fn into_root(self) -> Src<T> {
+  pub fn into_root(self) -> Src<[T::Item]> {
     let header = self.header();
     // SAFETY:
     // * the invariant for self.header guarantees that it is from InnerHeader::new_inner::<T::Item>
@@ -134,13 +119,28 @@ impl<T: SrcSlice + ?Sized> Src<T> {
   }
   
   #[inline]
-  pub fn clone_root(&self) -> Src<T> {
+  pub fn clone_root(&self) -> Src<[T::Item]> {
     self.clone().into_root()
   }
   
   #[inline]
-  pub fn downgrade_root(&self) -> WeakSrc<T> {
+  pub fn downgrade_root(&self) -> WeakSrc<[T::Item]> {
     Self::downgrade(self).into_root()
+  }
+  
+}
+
+impl<T: SrcSlice + ?Sized> Src<T> {
+  
+  // technically unnecessary (because a self.deref().len() will get the same number), but potentially more efficient because there is no need to construct the whole slice
+  #[inline]
+  pub fn len(&self) -> usize {
+    self.len
+  }
+  
+  #[inline]
+  pub fn is_empty(&self) -> bool {
+    self.len == 0
   }
   
   #[inline]
