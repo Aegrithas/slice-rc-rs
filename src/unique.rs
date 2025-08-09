@@ -588,6 +588,16 @@ mod tests {
   }
   
   #[test]
+  fn empty() {
+    let u: UniqueSrc<[u8]> = UniqueSrc::empty();
+    assert!(u.is_empty());
+    assert_eq!(u.len(), 0);
+    let u: UniqueSrc<str> = UniqueSrc::empty();
+    assert!(u.is_empty());
+    assert_eq!(u.len(), 0);
+  }
+  
+  #[test]
   fn len() {
     let u: UniqueSrc<[u8]> = UniqueSrc::from_default(0);
     assert_eq!(u.len(), 0);
@@ -614,6 +624,26 @@ mod tests {
     assert!(Src::is_root(&s));
     let s: Src<[u8]> = Src::as_slice(&s);
     assert_eq!(s.len(), 1);
+  }
+  
+  #[test]
+  fn single_cyclic() {
+    { // non-cyclic
+      let u: UniqueSrc<u8> = UniqueSrc::single_cyclic(|_| 42);
+      assert_eq!(*u, 42);
+    }
+    { // cyclic
+      struct S {
+        
+        this: WeakSrc<S>,
+        i: usize,
+        
+      }
+      let u: UniqueSrc<S> = UniqueSrc::single_cyclic(|weak| S { this: weak.clone(), i: 42 });
+      assert_eq!(u.i, 42);
+      let w: WeakSrc<S> = UniqueSrc::downgrade(&u);
+      assert!(WeakSrc::ptr_eq(&u.this, &w));
+    }
   }
   
   #[test]
@@ -764,6 +794,29 @@ mod tests {
   fn filled() {
     let u: UniqueSrc<[u8]> = UniqueSrc::filled(3, &42);
     assert_eq!(*u, [42, 42, 42]);
+  }
+  
+  #[test]
+  fn filled_cyclic() {
+    { // non-cyclic
+      let u: UniqueSrc<[u8]> = UniqueSrc::filled_cyclic(3, |_| 42);
+      assert_eq!(*u, [42, 42, 42]);
+    }
+    { // cyclic
+      #[derive(Clone)]
+      struct S {
+        
+        all: WeakSrc<[S]>,
+        i: usize,
+        
+      }
+      let u: UniqueSrc<[S]> = UniqueSrc::filled_cyclic(3, |weak| S { all: weak.clone(), i: 42 });
+      assert_eq!(u[0].i, 42);
+      assert_eq!(u[1].i, 42);
+      assert_eq!(u[2].i, 42);
+      let w: WeakSrc<[S]> = UniqueSrc::downgrade(&u);
+      assert!(WeakSrc::ptr_eq(&u[0].all, &w));
+    }
   }
   
   #[test]
