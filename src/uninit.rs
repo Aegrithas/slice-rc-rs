@@ -1,6 +1,6 @@
 use std::{fmt::{self, Debug, Formatter, Pointer}, marker::PhantomData, mem::forget, ptr::NonNull};
 
-use crate::{inner::Alloc, InnerHeader, Src, SrcIndex, SrcSlice, SrcTarget, UniqueSrc, WeakSrc};
+use crate::{inner::AllocUninit, InnerHeader, Src, SrcIndex, SrcSlice, SrcTarget, UniqueSrc, WeakSrc};
 
 pub struct UninitSrc<T: SrcTarget + ?Sized> {
   
@@ -136,7 +136,7 @@ impl<T> UninitSrc<[T]> {
   // this is placed here for simplicity
   #[inline]
   pub fn new(len: usize) -> UninitSrc<[T]> {
-    let header = InnerHeader::new_inner::<T, Alloc>(len);
+    let header = InnerHeader::new_inner::<T, AllocUninit>(len);
     Self {
       // SAFETY: the safety invariant of _.header is fulfilled by definition
       header,

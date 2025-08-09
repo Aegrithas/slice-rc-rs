@@ -1,6 +1,6 @@
 use std::{borrow::{Borrow, BorrowMut}, cmp::Ordering, fmt::{self, Debug, Formatter, Pointer}, hash::{Hash, Hasher}, marker::PhantomData, mem::{forget, MaybeUninit}, ops::{Deref, DerefMut, Index, IndexMut}, ptr::NonNull, str::Utf8Error};
 
-use crate::{inner::{Alloc, AllocZeroed}, InnerHeader, Src, SrcIndex, SrcSlice, SrcTarget, UninitSrc, WeakSrc};
+use crate::{inner::{AllocUninit, AllocZeroed}, InnerHeader, Src, SrcIndex, SrcSlice, SrcTarget, UninitSrc, WeakSrc};
 
 pub struct UniqueSrc<T: SrcTarget + ?Sized> {
   
@@ -148,7 +148,7 @@ impl<T> UniqueSrc<T> {
 impl<T> UniqueSrc<[T]> {
   
   pub fn new_uninit(len: usize) -> UniqueSrc<[MaybeUninit<T>]> {
-    let header = InnerHeader::new_inner::<T, Alloc>(len);
+    let header = InnerHeader::new_inner::<T, AllocUninit>(len);
     // SAFETY:
     // * we just got this from InnerHeader::new_inner::<T>
     // * no one else has seen the ptr yet, so the read/write requirements are fine
@@ -199,7 +199,7 @@ impl<T> UniqueSrc<[T]> {
   }
   
   pub fn from_array<const N: usize>(values: [T; N]) -> UniqueSrc<[T]> {
-    let header = InnerHeader::new_inner::<T, Alloc>(N);
+    let header = InnerHeader::new_inner::<T, AllocUninit>(N);
     // SAFETY:
     // * we just got this from InnerHeader::new_inner::<T>
     // * no one else has seen the ptr yet, so the read/write requirements are fine
@@ -238,7 +238,7 @@ impl<T> UniqueSrc<[T]> {
   #[inline]
   pub fn copied(values: &[T]) -> UniqueSrc<[T]> where T: Copy {
     let len = values.len();
-    let header = InnerHeader::new_inner::<T, Alloc>(len);
+    let header = InnerHeader::new_inner::<T, AllocUninit>(len);
     // SAFETY:
     // * we just got this from InnerHeader::new_inner::<T>
     // * no one else has seen the ptr yet, so the read/write requirements are fine

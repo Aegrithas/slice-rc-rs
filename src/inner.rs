@@ -216,9 +216,9 @@ pub trait AllocFlavor {
 }
 
 #[derive(Copy, Clone, Debug)]
-pub struct Alloc;
+pub struct AllocUninit;
 
-impl AllocFlavor for Alloc {
+impl AllocFlavor for AllocUninit {
   
   #[inline]
   unsafe fn alloc(layout: Layout) -> *mut u8 {
