@@ -192,7 +192,8 @@ impl<T: SrcSlice + ?Sized> WeakSrc<T> {
     // SAFETY: we just checked that this weak is not dangling
     let header = unsafe { self.header() };
     assert!(index < header.len(), "index {index} out of range for slice of length {}", header.len());
-    let start_ptr = unsafe { InnerHeader::get_elem_ptr::<T::Item>(self.header, index) };
+    // SAFETY: the safety invariant of self.start implies this safety requirement, given the assertion that index <= header.len() and that this weak is not dangling
+    let start_ptr = unsafe { self.start.add(index) };
     let this = WeakSrc {
       // SAFETY: the safety invariant of self.header is the same as this.header
       header: self.header,
@@ -226,11 +227,8 @@ impl<T: SrcSlice + ?Sized> WeakSrc<T> {
     // SAFETY: we just checked that this weak is not dangling and not dropped
     unsafe { T::validate_range_weak(&self, start_inc..end_exc) };
     let len = end_exc - start_inc;
-    // SAFETY:
-    // * all constructor fns for Src initialize header from InnerHeader::new_inner::<T::Item>
-    // * the header is only accessed from InnerHeader::get_header
-    // * the assertions verify that start_exc <= end_exc <= header.len
-    let start_ptr = unsafe { InnerHeader::get_elem_ptr::<T::Item>(self.header, start_inc) };
+    // SAFETY: the safety invariant of self.start implies this safety requirement, given the assertion that start_inc <= header.len() and that this weak is not dangling
+    let start_ptr = unsafe { self.start.add(start_inc) };
     let this = WeakSrc {
       // SAFETY: the safety invariant of self.header is the same as this.header
       header: self.header,

@@ -287,7 +287,7 @@ impl<T> UniqueSrc<[MaybeUninit<T>]> {
   // SAFETY: As with MaybeUninit::assume_init, it is up to the caller to guarantee that the inner value really is in an initialized state. Calling this when the content is not yet fully initialized causes immediate undefined behavior.
   pub unsafe fn assume_init(self) -> UniqueSrc<[T]> {
     // TODO: rephrase the safety requirements for InnerHeader to explicitly allow punning between T and type with T-like layout
-    UniqueSrc {
+    let this = UniqueSrc {
       // SAFETY: self.header has *almost* the same safety invariant as this.header: the only difference is that self uses MaybeUninit<T> where this expects T
       header: self.header,
       // SAFETY: self.start has *almost* the same safety invariant as this.start: the only difference is that self uses MaybeUninit<T> where this expects T
@@ -295,7 +295,9 @@ impl<T> UniqueSrc<[MaybeUninit<T>]> {
       // SAFETY: self.len has *almost* the same safety invariant as this.len: the only difference is that self uses MaybeUninit<T> where this expects T
       len: self.len,
       _phantom: PhantomData,
-    }
+    };
+    forget(self);
+    this
   }
   
 }

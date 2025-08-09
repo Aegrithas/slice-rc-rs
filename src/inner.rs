@@ -193,13 +193,13 @@ impl InnerHeader {
   pub fn dec_strong_count(&self) {
     let strong_count = &self.strong_count;
     debug_assert!(strong_count.get() > 0, "tried remove a non-existant strong_count");
-    strong_count.set(strong_count.get().wrapping_add(1));
+    strong_count.set(strong_count.get().wrapping_sub(1));
   }
   
   pub fn dec_weak_count(&self) {
     let weak_count = &self.weak_count;
     debug_assert!(weak_count.get() > 0, "tried remove a non-existant strong_count");
-    weak_count.set(weak_count.get().wrapping_add(1));
+    weak_count.set(weak_count.get().wrapping_sub(1));
   }
   
 }
