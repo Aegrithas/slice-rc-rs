@@ -84,6 +84,12 @@ impl<T> UniqueSrc<T> {
     UninitSrc::single().init_unique(value)
   }
   
+  pub fn single_cyclic<F: FnOnce(&WeakSrc<T>) -> T>(f: F) -> UniqueSrc<T> {
+    let this = UninitSrc::single();
+    let weak = this.downgrade();
+    this.init_unique(f(&weak))
+  }
+  
   #[inline]
   pub fn single_uninit() -> UniqueSrc<MaybeUninit<T>> {
     let this = UniqueSrc::<[T]>::new_uninit(1);
@@ -215,6 +221,12 @@ impl<T> UniqueSrc<[T]> {
   #[inline]
   pub fn filled(len: usize, value: &T) -> UniqueSrc<[T]> where T: Clone {
     UniqueSrc::from_fn(len, |_| value.clone())
+  }
+  
+  pub fn filled_cyclic<F: FnOnce(&WeakSrc<[T]>) -> T>(len: usize, f: F) -> UniqueSrc<[T]> where T: Clone {
+    let this = UninitSrc::new(len);
+    let weak = this.downgrade();
+    this.init_unique_filled(&f(&weak))
   }
   
   #[inline]

@@ -196,6 +196,11 @@ impl<T> Src<T> {
   }
   
   #[inline]
+  pub fn single_cyclic<F: FnOnce(&WeakSrc<T>) -> T>(f: F) -> Src<T> {
+    UniqueSrc::into_shared(UniqueSrc::single_cyclic(f))
+  }
+  
+  #[inline]
   pub fn single_uninit() -> Src<MaybeUninit<T>> {
     UniqueSrc::into_shared(UniqueSrc::single_uninit())
   }
@@ -262,6 +267,11 @@ impl<T> Src<[T]> {
   #[inline]
   pub fn filled(len: usize, value: &T) -> Src<[T]> where T: Clone {
     Self::from_fn(len, |_| value.clone())
+  }
+  
+  #[inline]
+  pub fn filled_cyclic<F: FnOnce(&WeakSrc<[T]>) -> T>(len: usize, f: F) -> Src<[T]> where T: Clone {
+    UniqueSrc::into_shared(UniqueSrc::filled_cyclic(len, f))
   }
   
   #[inline]
