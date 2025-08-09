@@ -99,33 +99,33 @@ impl<T: SrcTarget + ?Sized> Src<T> {
     Src::into_unique(this).unwrap_or_else(|this| T::new_unique_from_clone(&*this))
   }
   
-  pub fn into_root(self) -> Src<[T::Item]> {
-    let header = self.header();
+  pub fn into_root(this: Src<T>) -> Src<[T::Item]> {
+    let header = this.header();
     // SAFETY:
     // * the invariant for self.header guarantees that it is from InnerHeader::new_inner::<T::Item>
     // * the header is only accessed from InnerHeader::get_header
-    let start = unsafe { InnerHeader::get_body_ptr::<T::Item>(self.header) };
-    let this = Src {
+    let start = unsafe { InnerHeader::get_body_ptr::<T::Item>(this.header) };
+    let this2 = Src {
       // SAFETY: self.header has the same safety invariant as this.header
-      header: self.header,
+      header: this.header,
       // SAFETY: start was just aquired from InnerHeader::get_body_ptr::<T::Item>(self.header), which, with the assertions, meets the safety requirement
       start,
       // SAFETY: header.len() meets the safety requirements by definition
       len: header.len(),
       _phantom: PhantomData,
     };
-    forget(self); // don't modify the strong count because this is logically the same Src
-    this
+    forget(this); // don't modify the strong count because this is logically the same Src
+    this2
   }
   
   #[inline]
-  pub fn clone_root(&self) -> Src<[T::Item]> {
-    self.clone().into_root()
+  pub fn clone_root(this: &Src<T>) -> Src<[T::Item]> {
+    Src::into_root(this.clone())
   }
   
   #[inline]
-  pub fn downgrade_root(&self) -> WeakSrc<[T::Item]> {
-    Self::downgrade(self).into_root()
+  pub fn downgrade_root(this: &Src<T>) -> WeakSrc<[T::Item]> {
+    Self::downgrade(this).into_root()
   }
   
 }
@@ -745,7 +745,7 @@ mod tests {
     assert!(Src::is_root(&s));
     let s: Src<[u8]> = s.into_slice(1..);
     assert!(!Src::is_root(&s));
-    let s: Src<[u8]> = s.into_root();
+    let s: Src<[u8]> = Src::into_root(s);
     assert!(Src::is_root(&s));
   }
   
@@ -755,7 +755,7 @@ mod tests {
     assert!(Src::is_root(&s1));
     let s1: Src<[u8]> = s1.into_slice(1..);
     assert!(!Src::is_root(&s1));
-    let s2: Src<[u8]> = s1.clone_root();
+    let s2: Src<[u8]> = Src::clone_root(&s1);
     assert!(Src::is_root(&s2));
     assert!(Src::same_root(&s1, &s2));
   }
@@ -766,7 +766,7 @@ mod tests {
     assert!(Src::is_root(&s1));
     let s1: Src<[u8]> = s1.into_slice(1..);
     assert!(!Src::is_root(&s1));
-    let w: WeakSrc<[u8]> = s1.downgrade_root();
+    let w: WeakSrc<[u8]> = Src::downgrade_root(&s1);
     assert!(w.is_root());
     let s2: Src<[u8]> = w.upgrade().unwrap();
     assert!(Src::is_root(&s2));
