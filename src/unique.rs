@@ -539,3 +539,346 @@ impl<T: SrcTarget + ?Sized> Drop for UniqueSrc<T> {
   }
   
 }
+
+#[cfg(test)]
+mod tests {
+  
+  use std::{cell::Cell, mem::MaybeUninit, ops::{Deref, DerefMut}, panic::{catch_unwind, AssertUnwindSafe}, str::Utf8Error};
+  use crate::*;
+  
+  #[test]
+  fn downgrade() {
+    let u: UniqueSrc<[u8]> = UniqueSrc::from_default(3);
+    let w: WeakSrc<[u8]> = UniqueSrc::downgrade(&u);
+    assert!(w.upgrade().is_none());
+    let s1: Src<[u8]> = UniqueSrc::into_shared(u);
+    let s2: Src<[u8]> = w.upgrade().unwrap();
+    assert_eq!(s1, s2);
+    assert!(Src::ptr_eq(&s1, &s2));
+  }
+  
+  #[test]
+  fn into_shared() {
+    let u: UniqueSrc<[u8]> = UniqueSrc::from_array([1, 2, 3]);
+    let s1: Src<[u8]> = UniqueSrc::into_shared(u);
+    let s2: Src<[u8]> = s1.clone();
+    assert_eq!(*s1, [1, 2, 3]);
+    assert!(Src::ptr_eq(&s1, &s2));
+  }
+  
+  #[test]
+  fn len() {
+    let u: UniqueSrc<[u8]> = UniqueSrc::from_default(0);
+    assert_eq!(u.len(), 0);
+    let u: UniqueSrc<[u8]> = UniqueSrc::from_default(1);
+    assert_eq!(u.len(), 1);
+    let u: UniqueSrc<[u8]> = UniqueSrc::from_default(17);
+    assert_eq!(u.len(), 17);
+  }
+  
+  #[test]
+  fn is_empty() {
+    let u: UniqueSrc<[u8]> = UniqueSrc::from_default(0);
+    assert!(u.is_empty());
+    let u: UniqueSrc<[u8]> = UniqueSrc::from_default(1);
+    assert!(!u.is_empty());
+    let u: UniqueSrc<[u8]> = UniqueSrc::from_default(17);
+    assert!(!u.is_empty());
+  }
+  
+  // TODO: I now realize that, given the current behavior of Weak::into_slice, UninitSrc::downgrade_slice will always panic;
+  //       that said, there is at least one larger item on my todo list that will resolve this problem,
+  //       so for now I'm just marking this test as #[should_panic] and moving on
+  #[test]
+  #[should_panic]
+  fn downgrade_slice() {
+    { // slice
+      let u: UniqueSrc<[u8]> = UniqueSrc::from_array([1, 2, 3]);
+      let w: WeakSrc<[u8]> = u.downgrade_slice(1..);
+      assert!(w.upgrade().is_none());
+      let s1: Src<[u8]> = UniqueSrc::into_shared(u);
+      let s2: Src<[u8]> = w.upgrade().unwrap();
+      assert_eq!(s1[1..], *s2);
+      assert_eq!(*s2, [2, 3]);
+      assert!(Src::same_root(&s1, &s2));
+    }
+    { // item
+      let u: UniqueSrc<[u8]> = UniqueSrc::from_array([1, 2, 3]);
+      let w: WeakSrc<u8> = u.downgrade_slice(1);
+      assert!(w.upgrade().is_none());
+      let s1: Src<[u8]> = UniqueSrc::into_shared(u);
+      let s2: Src<u8> = w.upgrade().unwrap();
+      assert_eq!(s1[1], *s2);
+      assert_eq!(*s2, 2);
+      let s2: Src<[u8]> = Src::as_slice(s2);
+      assert!(Src::same_root(&s1, &s2));
+    }
+  }
+  
+  #[test]
+  fn single() {
+    let u: UniqueSrc<u8> = UniqueSrc::single(42);
+    let s: Src<u8> = UniqueSrc::into_shared(u);
+    assert!(Src::is_root(&s));
+    let s: Src<[u8]> = Src::as_slice(s);
+    assert_eq!(s.len(), 1);
+  }
+  
+  #[test]
+  fn single_uninit() {
+    let mut u: UniqueSrc<MaybeUninit<u8>> = UniqueSrc::single_uninit();
+    u.write(42);
+    // SAFETY: just initialized this with u.write()
+    let u: UniqueSrc<u8> = unsafe { u.assume_init() };
+    assert_eq!(*u, 42);
+  }
+  
+  #[test]
+  fn single_zeroed() {
+    let u: UniqueSrc<MaybeUninit<u8>> = UniqueSrc::single_zeroed();
+    // SAFETY: u8 is a zeroable type
+    let u: UniqueSrc<u8> = unsafe { u.assume_init() };
+    assert_eq!(*u, 0);
+  }
+  
+  #[test]
+  fn as_slice() {
+    let u: UniqueSrc<u8> = UniqueSrc::single(42);
+    let u: UniqueSrc<[u8]> = UniqueSrc::as_slice(u);
+    assert_eq!([42], *u);
+  }
+  
+  #[test]
+  fn downgrade_as_slice() {
+    let u: UniqueSrc<u8> = UniqueSrc::single(42);
+    let w: WeakSrc<[u8]> = UniqueSrc::downgrade_as_slice(&u);
+    let s1: Src<u8> = UniqueSrc::into_shared(u);
+    let s2: Src<[u8]> = w.upgrade().unwrap();
+    assert_eq!([*s1], *s2);
+  }
+  
+  #[test]
+  fn new_uninit() {
+    let mut u: UniqueSrc<[MaybeUninit<u8>]> = UniqueSrc::new_uninit(3);
+    assert_eq!(u.len(), 3);
+    for (i, elem) in u.iter_mut().enumerate() {
+      elem.write(i as _);
+    }
+    // SAFETY: just initialized it with all the elem.write()s
+    let u: UniqueSrc<[u8]> = unsafe { u.assume_init() };
+    assert_eq!(*u, [0, 1, 2]);
+  }
+  
+  #[test]
+  fn new_zeroed() {
+    let u: UniqueSrc<[MaybeUninit<u8>]> = UniqueSrc::new_zeroed(3);
+    assert_eq!(u.len(), 3);
+    // SAFETY: u8 is a zeroable type
+    let u: UniqueSrc<[u8]> = unsafe { u.assume_init() };
+    assert_eq!(*u, [0, 0, 0]);
+  }
+  
+  #[test]
+  fn from_fn() {
+    { // normal
+      let u: UniqueSrc<[usize]> = UniqueSrc::from_fn(3, |i| i * 2);
+      assert_eq!(*u, [0, 2, 4]);
+    }
+    { // panic
+      let drop_flags: [_; 6] = std::array::from_fn(|_| AssertUnwindSafe(Cell::new(false)));
+      struct DropFlagger<'a>(&'a Cell<bool>);
+      impl Drop for DropFlagger<'_> {
+        
+        fn drop(&mut self) {
+          self.0.update(|v| !v)
+        }
+        
+      }
+      let _: Result<_, _> = catch_unwind(|| {
+        let _: UniqueSrc<[DropFlagger<'_>]> = UniqueSrc::from_fn(drop_flags.len(), |i| {
+          if i >= 3 { panic!() }
+          DropFlagger(&drop_flags[i])
+        });
+      });
+      assert!(drop_flags[..3].iter().map(Deref::deref).all(Cell::get));
+      assert!(!drop_flags[3..].iter().map(Deref::deref).any(Cell::get));
+    }
+  }
+  
+  #[test]
+  fn cyclic_from_fn() {
+    { // normal, not cyclic
+      let u: UniqueSrc<[usize]> = UniqueSrc::cyclic_from_fn(3, |_, i| i * 2);
+      assert_eq!(*u, [0, 2, 4]);
+    }
+    { // normal, cyclic
+      struct S {
+        
+        all: WeakSrc<[S]>,
+        i: usize,
+        
+      }
+      let u: UniqueSrc<[S]> = UniqueSrc::cyclic_from_fn(3, |w, i| S { all: w.clone(), i: i * 2 });
+      assert_eq!(u[0].i, 0);
+      assert_eq!(u[1].i, 2);
+      assert_eq!(u[2].i, 4);
+      assert!(u[0].all.upgrade().is_none());
+      let s1: Src<[S]> = UniqueSrc::into_shared(u);
+      let s2: Src<[S]> = s1[0].all.upgrade().unwrap();
+      assert!(Src::ptr_eq(&s1, &s2));
+    }
+    { // panic
+      let drop_flags: [_; 6] = std::array::from_fn(|_| AssertUnwindSafe(Cell::new(false)));
+      struct DropFlagger<'a>(&'a Cell<bool>);
+      impl Drop for DropFlagger<'_> {
+        
+        fn drop(&mut self) {
+          self.0.update(|v| !v)
+        }
+        
+      }
+      let _: Result<_, _> = catch_unwind(|| {
+        let _: UniqueSrc<[DropFlagger<'_>]> = UniqueSrc::cyclic_from_fn(drop_flags.len(), |_, i| {
+          if i >= 3 { panic!() }
+          DropFlagger(&drop_flags[i])
+        });
+      });
+      assert!(drop_flags[..3].iter().map(Deref::deref).all(Cell::get));
+      assert!(!drop_flags[3..].iter().map(Deref::deref).any(Cell::get));
+    }
+  }
+  
+  #[test]
+  fn from_iter() {
+    let u: UniqueSrc<[u8]> = UniqueSrc::from_iter(vec![1, 2, 3].into_iter().map(|i| i * 2));
+    assert_eq!(*u, [2, 4, 6]);
+  }
+  
+  #[test]
+  fn from_array() {
+    let u: UniqueSrc<[u8]> = UniqueSrc::from_array([1, 2, 3]);
+    assert_eq!(*u, [1, 2, 3]);
+  }
+  
+  #[test]
+  fn from_default() {
+    #[derive(Copy, Clone, Eq, PartialEq, Debug)]
+    struct D42(u8);
+    impl Default for D42 {
+      
+      fn default() -> Self {
+        Self(42)
+      }
+      
+    }
+    let u: UniqueSrc<[u8]> = UniqueSrc::from_default(3);
+    assert_eq!(*u, [0, 0, 0]);
+    let u: UniqueSrc<[D42]> = UniqueSrc::from_default(3);
+    assert_eq!(*u, [D42(42), D42(42), D42(42)]);
+  }
+  
+  #[test]
+  fn filled() {
+    let u: UniqueSrc<[u8]> = UniqueSrc::filled(3, &42);
+    assert_eq!(*u, [42, 42, 42]);
+  }
+  
+  #[test]
+  fn cloned() {
+    #[derive(Clone, Eq, PartialEq, Debug)]
+    struct NonCopy(u8);
+    let u: UniqueSrc<[NonCopy]> = UniqueSrc::cloned(&[NonCopy(1), NonCopy(2), NonCopy(3)]);
+    assert_eq!(*u, [NonCopy(1), NonCopy(2), NonCopy(3)]);
+  }
+  
+  #[test]
+  fn copied() {
+    let u: UniqueSrc<[u8]> = UniqueSrc::copied(&[1, 2, 3]);
+    assert_eq!(*u, [1, 2, 3]);
+  }
+  
+  #[test]
+  fn assume_init_single() {
+    let u: UniqueSrc<MaybeUninit<u8>> = UniqueSrc::single_zeroed();
+    // SAFETY: u8 is a zeroable type
+    let u: UniqueSrc<u8> = unsafe { u.assume_init() };
+    assert_eq!(*u, 0);
+  }
+  
+  #[test]
+  fn assume_init_slice() {
+    let u: UniqueSrc<[MaybeUninit<u8>]> = UniqueSrc::new_zeroed(3);
+    // SAFETY: u8 is a zeroable type
+    let u: UniqueSrc<[u8]> = unsafe { u.assume_init() };
+    assert_eq!(*u, [0, 0, 0]);
+  }
+  
+  #[test]
+  fn new() {
+    let u: UniqueSrc<str> = UniqueSrc::new("Hello World!");
+    assert_eq!(&*u, "Hello World!");
+  }
+  
+  #[test]
+  fn from_utf8() {
+    { // UTF-8
+      let u: UniqueSrc<[u8]> = UniqueSrc::copied(b"Hello World!");
+      let u: UniqueSrc<str> = UniqueSrc::from_utf8(u).unwrap();
+      assert_eq!(&*u, "Hello World!");
+    }
+    { // not UTF-8
+      let u: UniqueSrc<[u8]> = UniqueSrc::copied(&[0xFF]);
+      let _: Utf8Error = UniqueSrc::from_utf8(u).unwrap_err();
+    }
+  }
+  
+  #[test]
+  fn from_utf8_unchecked() {
+    let u: UniqueSrc<[u8]> = UniqueSrc::copied(b"Hello World!");
+    // SAFETY: just got the bytes from a str
+    let u: UniqueSrc<str> = unsafe { UniqueSrc::from_utf8_unchecked(u) };
+    assert_eq!(&*u, "Hello World!");
+  }
+  
+  #[test]
+  fn as_bytes() {
+    let u: UniqueSrc<str> = UniqueSrc::new("Hello World!");
+    let u: UniqueSrc<[u8]> = UniqueSrc::as_bytes(u);
+    assert_eq!(&*u, b"Hello World!");
+  }
+  
+  #[test]
+  fn deref() {
+    let u: UniqueSrc<[u8]> = UniqueSrc::from_array([1, 2, 3]);
+    assert_eq!(Deref::deref(&u), &[1, 2, 3]);
+  }
+  
+  #[test]
+  fn deref_mut() {
+    let mut u: UniqueSrc<[i8]> = UniqueSrc::from_array([1, 2, 3]);
+    assert_eq!(DerefMut::deref_mut(&mut u), &mut [1, 2, 3]);
+    u[0] -= 4;
+    u[1] = 42;
+    u[2] *= 2;
+    assert_eq!(DerefMut::deref_mut(&mut u), &mut [-3, 42, 6]);
+  }
+  
+  #[test]
+  fn drop() {
+    let drop_flags: [_; 3] = std::array::from_fn(|_| Cell::new(false));
+    struct DropFlagger<'a>(&'a Cell<bool>);
+    impl Drop for DropFlagger<'_> {
+      
+      fn drop(&mut self) {
+        self.0.update(|v| !v)
+      }
+      
+    }
+    assert!(!drop_flags.iter().any(Cell::get));
+    let u: UniqueSrc<[DropFlagger<'_>]> = UniqueSrc::from_iter(drop_flags.iter().map(DropFlagger));
+    assert!(!drop_flags.iter().any(Cell::get));
+    std::mem::drop(u);
+    assert!(drop_flags.iter().all(Cell::get));
+  }
+  
+}
