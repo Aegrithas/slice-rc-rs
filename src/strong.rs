@@ -99,13 +99,14 @@ impl<T: SrcTarget + ?Sized> Src<T> {
     Src::into_unique(this).unwrap_or_else(|this| T::new_unique_from_clone(&*this))
   }
   
-  pub fn into_root(this: Src<T>) -> Src<[T::Item]> {
+  pub fn root(this: &Src<T>) -> Src<[T::Item]> {
     let header = this.header();
     // SAFETY:
     // * the invariant for self.header guarantees that it is from InnerHeader::new_inner::<T::Item>
     // * the header is only accessed from InnerHeader::get_header
     let start = unsafe { InnerHeader::get_body_ptr::<T::Item>(this.header) };
-    let this2 = Src {
+    header.inc_strong_count();
+    Src {
       // SAFETY: self.header has the same safety invariant as this.header
       header: this.header,
       // SAFETY: start was just aquired from InnerHeader::get_body_ptr::<T::Item>(self.header), which, with the assertions, meets the safety requirement
@@ -113,19 +114,7 @@ impl<T: SrcTarget + ?Sized> Src<T> {
       // SAFETY: header.len() meets the safety requirements by definition
       len: header.len(),
       _phantom: PhantomData,
-    };
-    forget(this); // don't modify the strong count because this is logically the same Src
-    this2
-  }
-  
-  #[inline]
-  pub fn clone_root(this: &Src<T>) -> Src<[T::Item]> {
-    Src::into_root(this.clone())
-  }
-  
-  #[inline]
-  pub fn downgrade_root(this: &Src<T>) -> WeakSrc<[T::Item]> {
-    Self::downgrade(this).into_root()
+    }
   }
   
 }
@@ -144,18 +133,8 @@ impl<T: SrcSlice + ?Sized> Src<T> {
   }
   
   #[inline]
-  pub fn into_slice<I: SrcIndex<T>>(self, index: I) -> Src<I::Output> {
-    index.get(self)
-  }
-  
-  #[inline]
-  pub fn clone_slice<I: SrcIndex<T>>(&self, index: I) -> Src<I::Output> {
-    self.clone().into_slice(index)
-  }
-  
-  #[inline]
-  pub fn downgrade_slice<I: SrcIndex<T>>(&self, index: I) -> WeakSrc<I::Output> {
-    Src::downgrade(self).into_slice(index)
+  pub fn slice<I: SrcIndex<T>>(&self, index: I) -> Src<I::Output> {
+    index.get(self.clone())
   }
   
   pub(crate) fn into_item(self, index: usize) -> Src<T::Item> {
@@ -227,8 +206,9 @@ impl<T> Src<T> {
   }
   
   #[inline]
-  pub fn as_slice(this: Src<T>) -> Src<[T]> {
-    let this2 = Src {
+  pub fn as_slice(this: &Src<T>) -> Src<[T]> {
+    this.header().inc_strong_count();
+    Src {
       // SAFETY: this.header has the same invariant as this2
       header: this.header,
       // SAFETY: this.start has the same invariant as this2
@@ -236,19 +216,7 @@ impl<T> Src<T> {
       // SAFETY: this.len's invariant implies this2.len's invariant
       len: 1,
       _phantom: PhantomData,
-    };
-    forget(this); // don't modify the strong count because this is logically the same Src
-    this2
-  }
-  
-  #[inline]
-  pub fn clone_as_slice(this: &Src<T>) -> Src<[T]> {
-    Src::as_slice(Src::clone(this))
-  }
-  
-  #[inline]
-  pub fn downgrade_as_slice(this: &Src<T>) -> WeakSrc<[T]> {
-    Self::downgrade(this).as_slice()
+    }
   }
   
 }
@@ -384,9 +352,10 @@ impl Src<str> {
   }
   
   #[inline]
-  pub fn as_bytes(this: Src<str>) -> Src<[u8]> {
+  pub fn as_bytes(this: &Src<str>) -> Src<[u8]> {
+    this.header().inc_strong_count();
     // TODO: rephrase the safety requirements for InnerHeader to explicitly allow punning between T and type with T-like layout
-    let this2 = Src {
+    Src {
       // SAFETY: this.header has *almost* the same safety invariant as this2.header: the only difference is that this uses str where this2 expects [u8];
       //         the pun from str to [u8] relaxes the safety requirement that this's content is valid UTF-8
       header: this.header,
@@ -397,9 +366,7 @@ impl Src<str> {
       //         the pun from str to [u8] relaxes the safety requirement that this's content is valid UTF-8
       len: this.len,
       _phantom: PhantomData,
-    };
-    forget(this);
-    this2
+    }
   }
   
 }
@@ -589,12 +556,12 @@ mod tests {
   #[test]
   fn same_root() {
     let s1: Src<[u8]> = Src::from_default(1);
-    let s2: Src<[u8]> = s1.clone_slice(1..);
+    let s2: Src<[u8]> = s1.slice(1..);
     assert_ne!(s1, s2);
     assert!(!Src::ptr_eq(&s1, &s2));
     assert!(Src::same_root(&s1, &s2));
     let s3: Src<[u8]> = Src::from_default(1);
-    let s4: Src<[u8]> = s3.clone_slice(1..);
+    let s4: Src<[u8]> = s3.slice(1..);
     assert_eq!(s1, s3);
     assert_ne!(s3, s4);
     assert_eq!(s2, s4);
@@ -609,8 +576,8 @@ mod tests {
   #[test]
   fn is_root() {
     let s1: Src<[u8]> = Src::from_default(1);
-    let s2: Src<[u8]> = s1.clone_slice(..);
-    let s3: Src<[u8]> = s1.clone_slice(1..);
+    let s2: Src<[u8]> = s1.slice(..);
+    let s3: Src<[u8]> = s1.slice(1..);
     assert!(Src::is_root(&s1));
     assert!(Src::is_root(&s2));
     assert!(!Src::is_root(&s3));
@@ -719,9 +686,9 @@ mod tests {
     assert_eq!(s.len(), 1);
     let s: Src<[u8]> = Src::from_default(17);
     assert_eq!(s.len(), 17);
-    let s: Src<[u8]> = s.into_slice(3..14);
+    let s: Src<[u8]> = s.slice(3..14);
     assert_eq!(s.len(), 11);
-    let s: Src<[u8]> = s.into_slice(3..3);
+    let s: Src<[u8]> = s.slice(3..3);
     assert_eq!(s.len(), 0);
   }
   
@@ -733,136 +700,51 @@ mod tests {
     assert!(!s.is_empty());
     let s: Src<[u8]> = Src::from_default(17);
     assert!(!s.is_empty());
-    let s: Src<[u8]> = s.into_slice(3..14);
+    let s: Src<[u8]> = s.slice(3..14);
     assert!(!s.is_empty());
-    let s: Src<[u8]> = s.into_slice(3..3);
+    let s: Src<[u8]> = s.slice(3..3);
     assert!(s.is_empty());
   }
   
   #[test]
-  fn into_root() {
-    let s: Src<[u8]> = Src::from_default(1);
-    assert!(Src::is_root(&s));
-    let s: Src<[u8]> = s.into_slice(1..);
-    assert!(!Src::is_root(&s));
-    let s: Src<[u8]> = Src::into_root(s);
-    assert!(Src::is_root(&s));
-  }
-  
-  #[test]
-  fn clone_root() {
+  fn root() {
     let s1: Src<[u8]> = Src::from_default(1);
     assert!(Src::is_root(&s1));
-    let s1: Src<[u8]> = s1.into_slice(1..);
+    let s1: Src<[u8]> = s1.slice(1..);
     assert!(!Src::is_root(&s1));
-    let s2: Src<[u8]> = Src::clone_root(&s1);
+    let s2: Src<[u8]> = Src::root(&s1);
     assert!(Src::is_root(&s2));
     assert!(Src::same_root(&s1, &s2));
   }
   
   #[test]
-  fn downgrade_root() {
-    let s1: Src<[u8]> = Src::from_default(1);
-    assert!(Src::is_root(&s1));
-    let s1: Src<[u8]> = s1.into_slice(1..);
-    assert!(!Src::is_root(&s1));
-    let w: WeakSrc<[u8]> = Src::downgrade_root(&s1);
-    assert!(w.is_root());
-    let s2: Src<[u8]> = w.upgrade().unwrap();
-    assert!(Src::is_root(&s2));
-    assert!(Src::same_root(&s1, &s2));
-  }
-  
-  #[test]
-  fn into_slice() {
-    { // slice
-      let s: Src<[u8]> = Src::from_array([1, 2, 3]);
-      assert_eq!(&*s, &[1, 2, 3]);
-      let s: Src<[u8]> = s.into_slice(1..);
-      assert_eq!(&*s, &[2, 3]);
-      let s: Src<[u8]> = s.into_slice(..1);
-      assert_eq!(&*s, &[2]);
-    }
-    { // item 1
-      let s: Src<[u8]> = Src::from_array([1, 2, 3]);
-      assert_eq!(&*s, &[1, 2, 3]);
-      let s: Src<u8> = s.into_slice(2);
-      assert_eq!(&*s, &3);
-    }
-    { // item 2
-      let s: Src<[u8]> = Src::from_array([1, 2, 3]);
-      assert_eq!(&*s, &[1, 2, 3]);
-      let s: Src<[u8]> = s.into_slice(1..);
-      assert_eq!(&*s, &[2, 3]);
-      let s: Src<u8> = s.into_slice(0);
-      assert_eq!(&*s, &2);
-    }
-  }
-  
-  #[test]
-  fn clone_slice() {
+  fn slice() {
     { // slice
       let s1: Src<[u8]> = Src::from_array([1, 2, 3]);
       assert_eq!(&*s1, &[1, 2, 3]);
-      let s1: Src<[u8]> = s1.into_slice(1..);
+      let s1: Src<[u8]> = s1.slice(1..);
       assert_eq!(&*s1, &[2, 3]);
-      let s2: Src<[u8]> = s1.clone_slice(..1);
+      let s2: Src<[u8]> = s1.slice(..1);
       assert_eq!(&*s2, &[2]);
       assert!(Src::same_root(&s1, &s2));
     }
     { // item 1
       let s1: Src<[u8]> = Src::from_array([1, 2, 3]);
       assert_eq!(&*s1, &[1, 2, 3]);
-      let s2: Src<u8> = s1.clone_slice(2);
+      let s2: Src<u8> = s1.slice(2);
       assert_eq!(&*s2, &3);
-      let s2: Src<[u8]> = Src::as_slice(s2);
+      let s2: Src<[u8]> = Src::as_slice(&s2);
       assert_eq!(&*s2, &[3]);
       assert!(Src::same_root(&s1, &s2));
     }
     { // item 2
       let s1: Src<[u8]> = Src::from_array([1, 2, 3]);
       assert_eq!(&*s1, &[1, 2, 3]);
-      let s1: Src<[u8]> = s1.into_slice(1..);
+      let s1: Src<[u8]> = s1.slice(1..);
       assert_eq!(&*s1, &[2, 3]);
-      let s2: Src<u8> = s1.clone_slice(0);
+      let s2: Src<u8> = s1.slice(0);
       assert_eq!(&*s2, &2);
-      let s2: Src<[u8]> = Src::as_slice(s2);
-      assert_eq!(&*s2, &[2]);
-      assert!(Src::same_root(&s1, &s2));
-    }
-  }
-  
-  #[test]
-  fn downgrade_slice() {
-    { // slice
-      let s1: Src<[u8]> = Src::from_array([1, 2, 3]);
-      assert_eq!(&*s1, &[1, 2, 3]);
-      let s1: Src<[u8]> = s1.into_slice(1..);
-      assert_eq!(&*s1, &[2, 3]);
-      let w: WeakSrc<[u8]> = s1.downgrade_slice(..1);
-      let s2: Src<[u8]> = w.upgrade().unwrap();
-      assert_eq!(&*s2, &[2]);
-      assert!(Src::same_root(&s1, &s2));
-    }
-    { // item 1
-      let s1: Src<[u8]> = Src::from_array([1, 2, 3]);
-      assert_eq!(&*s1, &[1, 2, 3]);
-      let w: WeakSrc<u8> = s1.downgrade_slice(2);
-      let s2: Src<u8> = w.upgrade().unwrap();
-      assert_eq!(&*s2, &3);
-      let s2: Src<[u8]> = Src::as_slice(s2);
-      assert_eq!(&*s2, &[3]);
-      assert!(Src::same_root(&s1, &s2));
-    }
-    { // item 2
-      let s1: Src<[u8]> = Src::from_array([1, 2, 3]);
-      assert_eq!(&*s1, &[1, 2, 3]);
-      let s1: Src<[u8]> = s1.into_slice(1..);
-      assert_eq!(&*s1, &[2, 3]);
-      let w: WeakSrc<u8> = s1.downgrade_slice(0);
-      let s2: Src<u8> = w.upgrade().unwrap();
-      assert_eq!(&*s2, &2);
-      let s2: Src<[u8]> = Src::as_slice(s2);
+      let s2: Src<[u8]> = Src::as_slice(&s2);
       assert_eq!(&*s2, &[2]);
       assert!(Src::same_root(&s1, &s2));
     }
@@ -897,47 +779,13 @@ mod tests {
   fn as_slice() {
     { // single root
       let s1: Src<u8> = Src::single(42);
-      let s2: Src<[u8]> = Src::as_slice(Src::clone(&s1));
+      let s2: Src<[u8]> = Src::as_slice(&s1);
       assert_eq!([*s1], *s2);
     }
     { // from slice
       let s1: Src<[u8]> = Src::from_array([1, 2, 3]);
-      let s2: Src<u8> = s1.clone_slice(1);
-      let s3: Src<[u8]> = Src::as_slice(Src::clone(&s2));
-      assert_eq!(s1[1], *s2);
-      assert_eq!([*s2], *s3);
-    }
-  }
-  
-  #[test]
-  fn clone_as_slice() {
-    { // single root
-      let s1: Src<u8> = Src::single(42);
-      let s2: Src<[u8]> = Src::clone_as_slice(&s1);
-      assert_eq!([*s1], *s2);
-    }
-    { // from slice
-      let s1: Src<[u8]> = Src::from_array([1, 2, 3]);
-      let s2: Src<u8> = s1.clone_slice(1);
-      let s3: Src<[u8]> = Src::clone_as_slice(&s2);
-      assert_eq!(s1[1], *s2);
-      assert_eq!([*s2], *s3);
-    }
-  }
-  
-  #[test]
-  fn downgrade_as_slice() {
-    { // single root
-      let s1: Src<u8> = Src::single(42);
-      let w: WeakSrc<[u8]> = Src::downgrade_as_slice(&s1);
-      let s2: Src<[u8]> = w.upgrade().unwrap();
-      assert_eq!([*s1], *s2);
-    }
-    { // from slice
-      let s1: Src<[u8]> = Src::from_array([1, 2, 3]);
-      let s2: Src<u8> = s1.clone_slice(1);
-      let w: WeakSrc<[u8]> = Src::downgrade_as_slice(&s2);
-      let s3: Src<[u8]> = w.upgrade().unwrap();
+      let s2: Src<u8> = s1.slice(1);
+      let s3: Src<[u8]> = Src::as_slice(&s2);
       assert_eq!(s1[1], *s2);
       assert_eq!([*s2], *s3);
     }
@@ -1129,7 +977,7 @@ mod tests {
   #[test]
   fn as_bytes() {
     let s: Src<str> = Src::new("Hello World!");
-    let s: Src<[u8]> = Src::as_bytes(s);
+    let s: Src<[u8]> = Src::as_bytes(&s);
     assert_eq!(&*s, b"Hello World!");
   }
   

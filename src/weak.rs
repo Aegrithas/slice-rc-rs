@@ -125,7 +125,7 @@ impl<T: SrcTarget + ?Sized> WeakSrc<T> {
     }
   }
   
-  pub fn into_root(self) -> WeakSrc<[T::Item]> {
+  pub fn root(&self) -> WeakSrc<[T::Item]> {
     if self.is_dangling() {
       return WeakSrc::dangling()
     }
@@ -135,7 +135,8 @@ impl<T: SrcTarget + ?Sized> WeakSrc<T> {
     // * all constructor fns for Src and UninitSrc initialize header from InnerHeader::new_inner::<T::Item>; a WeakSrc must be constructed either from a Src, an UninitSrc, or must be dangling; we just checked that this weak is not dangling
     // * the header is only accessed from InnerHeader::get_header
     let start = unsafe { InnerHeader::get_body_ptr(self.header) };
-    let this = WeakSrc {
+    header.inc_weak_count();
+    WeakSrc {
       // SAFETY: this self.header has the same safety invariant as this.header
       header: self.header,
       // SAFETY: if this weak is not dangling (which we checked earlier), the start that we just calculated earlier meets the safety invariant by definition
@@ -143,19 +144,7 @@ impl<T: SrcTarget + ?Sized> WeakSrc<T> {
       // SAFETY: if this weak is not dangling (which we checked earlier), header.len() meets the safety invariant by definition
       len: header.len(),
       _phantom: PhantomData,
-    };
-    forget(self); // don't decrease the weak counter because this is logically the same WeakSrc
-    this
-  }
-  
-  #[inline]
-  pub fn clone_root(&self) -> WeakSrc<[T::Item]> {
-    self.clone().into_root()
-  }
-  
-  #[inline]
-  pub fn upgrade_root(&self) -> Option<Src<[T::Item]>> {
-    self.upgrade().map(Src::into_root)
+    }
   }
   
 }
@@ -173,18 +162,8 @@ impl<T: SrcSlice + ?Sized> WeakSrc<T> {
   }
   
   #[inline]
-  pub fn into_slice<I: SrcIndex<T>>(self, index: I) -> WeakSrc<I::Output> {
-    index.get_weak(self)
-  }
-  
-  #[inline]
-  pub fn clone_slice<I: SrcIndex<T>>(&self, index: I) -> WeakSrc<I::Output> {
-    self.clone().into_slice(index)
-  }
-  
-  #[inline]
-  pub fn upgrade_slice<I: SrcIndex<T>>(&self, index: I) -> Option<Src<I::Output>> {
-    self.upgrade().map(move |s| Src::into_slice(s, index))
+  pub fn slice<I: SrcIndex<T>>(&self, index: I) -> WeakSrc<I::Output> {
+    index.get_weak(self.clone())
   }
   
   pub(crate) fn into_item(self, index: usize) -> WeakSrc<T::Item> {
@@ -256,8 +235,12 @@ impl<T: SrcSlice + ?Sized> WeakSrc<T> {
 impl<T> WeakSrc<T> {
   
   #[inline]
-  pub fn as_slice(self) -> WeakSrc<[T]> {
-    let this = WeakSrc {
+  pub fn as_slice(&self) -> WeakSrc<[T]> {
+    if !self.is_dangling() {
+      // SAFETY: we just checked that this weak is not dangling
+      unsafe { self.header() }.inc_weak_count();
+    }
+    WeakSrc {
       // SAFETY: the safety invariant of self.header is the same as this.header
       header: self.header,
       // SAFETY: the safety invariant of self.start is the same as this.start
@@ -265,19 +248,7 @@ impl<T> WeakSrc<T> {
       // SAFETY: if this weak is dangling, then self.len has no safety invariant; if it is weak, then the safety invariant of self.len is logically identical to that of this.len
       len: 1,
       _phantom: PhantomData,
-    };
-    forget(self); // don't modify the weak count because this is logically the same WeakSrc
-    this
-  }
-  
-  #[inline]
-  pub fn clone_as_slice(&self) -> WeakSrc<[T]> {
-    self.clone().as_slice()
-  }
-  
-  #[inline]
-  pub fn upgrade_as_slice(&self) -> Option<Src<[T]>> {
-    self.upgrade().map(Src::as_slice)
+    }
   }
   
 }
@@ -399,8 +370,8 @@ mod tests {
       let w3: WeakSrc<[u8]> = WeakSrc::dangling();
       assert!(!w1.ptr_eq(&w3));
       assert!(!w2.ptr_eq(&w3));
-      let w4: WeakSrc<[u8]> = s.downgrade_slice(1..);
-      let w5: WeakSrc<[u8]> = s.downgrade_slice(1..);
+      let w4: WeakSrc<[u8]> = Src::downgrade(&s).slice(1..);
+      let w5: WeakSrc<[u8]> = Src::downgrade(&s).slice(1..);
       assert!(w4.ptr_eq(&w5));
       assert!(!w4.ptr_eq(&w1));
       assert!(!w4.ptr_eq(&w3));
@@ -435,7 +406,7 @@ mod tests {
       let w3: WeakSrc<[u8]> = WeakSrc::dangling();
       assert!(!w1.same_root(&w3));
       assert!(!w2.same_root(&w3));
-      let w4: WeakSrc<[u8]> = s.downgrade_slice(1..);
+      let w4: WeakSrc<[u8]> = Src::downgrade(&s).slice(1..);
       assert!(w4.same_root(&w1));
       assert!(!w4.same_root(&w3));
     }
@@ -464,7 +435,7 @@ mod tests {
       let s: Src<[u8]> = Src::from_default(1);
       let w1: WeakSrc<[u8]> = Src::downgrade(&s);
       assert!(w1.is_root());
-      let w2: WeakSrc<[u8]> = s.downgrade_slice(1..);
+      let w2: WeakSrc<[u8]> = Src::downgrade(&s).slice(1..);
       assert!(!w2.is_root());
       std::mem::drop(s);
       assert!(w1.is_root());
@@ -533,9 +504,9 @@ mod tests {
       let s: Src<[u8]> = Src::from_default(17);
       let w: WeakSrc<[u8]> = Src::downgrade(&s);
       assert_eq!(w.len(), 17);
-      let w: WeakSrc<[u8]> = w.into_slice(3..14);
+      let w: WeakSrc<[u8]> = w.slice(3..14);
       assert_eq!(w.len(), 11);
-      let w: WeakSrc<[u8]> = w.into_slice(3..3);
+      let w: WeakSrc<[u8]> = w.slice(3..3);
       assert_eq!(w.len(), 0);
     }
   }
@@ -556,18 +527,18 @@ mod tests {
       let s: Src<[u8]> = Src::from_default(17);
       let w: WeakSrc<[u8]> = Src::downgrade(&s);
       assert!(!w.is_empty());
-      let w: WeakSrc<[u8]> = w.into_slice(3..14);
+      let w: WeakSrc<[u8]> = w.slice(3..14);
       assert!(!w.is_empty());
-      let w: WeakSrc<[u8]> = w.into_slice(3..3);
+      let w: WeakSrc<[u8]> = w.slice(3..3);
       assert!(w.is_empty());
     }
   }
   
   #[test]
-  fn into_root() {
+  fn root() {
     { // dangling
       let w1: WeakSrc<[u8]> = WeakSrc::dangling();
-      let w2: WeakSrc<[u8]> = w1.clone().into_root();
+      let w2: WeakSrc<[u8]> = w1.root();
       assert!(w2.is_root());
       assert!(w1.ptr_eq(&w2));
     }
@@ -575,113 +546,31 @@ mod tests {
       let s: Src<[u8]> = Src::from_default(1);
       let w: WeakSrc<[u8]> = Src::downgrade(&s);
       assert!(w.is_root());
-      let w: WeakSrc<[u8]> = w.into_slice(1..);
+      let w: WeakSrc<[u8]> = w.slice(1..);
       assert!(!w.is_root());
-      let w: WeakSrc<[u8]> = w.into_root();
-      assert!(w.is_root());
-    }
-  }
-  
-  #[test]
-  fn clone_root() {
-    { // dangling
-      let w1: WeakSrc<[u8]> = WeakSrc::dangling();
-      let w2: WeakSrc<[u8]> = w1.clone_root();
-      assert!(w2.is_root());
-      assert!(w1.ptr_eq(&w2));
-    }
-    { // not dangling
-      let s: Src<[u8]> = Src::from_default(1);
-      let w: WeakSrc<[u8]> = Src::downgrade(&s);
-      assert!(w.is_root());
-      let w: WeakSrc<[u8]> = w.into_slice(1..);
-      assert!(!w.is_root());
-      let w: WeakSrc<[u8]> = w.clone_root();
-      assert!(w.is_root());
-    }
-  }
-  
-  #[test]
-  fn upgrade_root() {
-    { // dangling
-      let w1: WeakSrc<[u8]> = WeakSrc::dangling();
-      assert!(w1.clone().upgrade_root().is_none());
-    }
-    { // not dangling
-      let s: Src<[u8]> = Src::from_default(1);
-      let w: WeakSrc<[u8]> = Src::downgrade(&s);
-      assert!(w.is_root());
-      let w: WeakSrc<[u8]> = w.into_slice(1..);
-      assert!(!w.is_root());
-      let s: Src<[u8]> = w.upgrade_root().unwrap();
-      assert!(Src::is_root(&s));
-      let w: WeakSrc<[u8]> = Src::downgrade(&s);
+      let w: WeakSrc<[u8]> = w.root();
       assert!(w.is_root());
     }
   }
   
   #[test]
   #[should_panic]
-  fn into_slice_dangling() {
+  fn slice_dangling() {
     let w: WeakSrc<[u8]> = WeakSrc::dangling();
-    let _: WeakSrc<[u8]> = w.into_slice(..);
+    let _: WeakSrc<[u8]> = w.slice(..);
   }
   
   #[test]
-  fn into_slice() {
-    { // slice
-      let s: Src<[u8]> = Src::from_array([1, 2, 3]);
-      let w: WeakSrc<[u8]> = Src::downgrade(&s);
-      let s: Src<[u8]> = w.upgrade().unwrap();
-      assert_eq!(&*s, &[1, 2, 3]);
-      let w: WeakSrc<[u8]> = w.into_slice(1..);
-      let s: Src<[u8]> = w.upgrade().unwrap();
-      assert_eq!(&*s, &[2, 3]);
-      let w: WeakSrc<[u8]> = w.into_slice(..1);
-      let s: Src<[u8]> = w.upgrade().unwrap();
-      assert_eq!(&*s, &[2]);
-    }
-    { // item 1
-      let s: Src<[u8]> = Src::from_array([1, 2, 3]);
-      let w: WeakSrc<[u8]> = Src::downgrade(&s);
-      let s: Src<[u8]> = w.upgrade().unwrap();
-      assert_eq!(&*s, &[1, 2, 3]);
-      let w: WeakSrc<u8> = w.into_slice(2);
-      let s: Src<u8> = w.upgrade().unwrap();
-      assert_eq!(&*s, &3);
-    }
-    { // item 2
-      let s: Src<[u8]> = Src::from_array([1, 2, 3]);
-      let w: WeakSrc<[u8]> = Src::downgrade(&s);
-      let s: Src<[u8]> = w.upgrade().unwrap();
-      assert_eq!(&*s, &[1, 2, 3]);
-      let w: WeakSrc<[u8]> = w.into_slice(1..);
-      let s: Src<[u8]> = w.upgrade().unwrap();
-      assert_eq!(&*s, &[2, 3]);
-      let w: WeakSrc<u8> = w.into_slice(0);
-      let s: Src<u8> = w.upgrade().unwrap();
-      assert_eq!(&*s, &2);
-    }
-  }
-  
-  #[test]
-  #[should_panic]
-  fn clone_slice_dangling() {
-    let w: WeakSrc<[u8]> = WeakSrc::dangling();
-    let _: WeakSrc<[u8]> = w.clone_slice(..);
-  }
-  
-  #[test]
-  fn clone_slice() {
+  fn slice() {
     { // slice
       let s1: Src<[u8]> = Src::from_array([1, 2, 3]);
       let w1: WeakSrc<[u8]> = Src::downgrade(&s1);
       let s1: Src<[u8]> = w1.upgrade().unwrap();
       assert_eq!(&*s1, &[1, 2, 3]);
-      let w1: WeakSrc<[u8]> = w1.into_slice(1..);
+      let w1: WeakSrc<[u8]> = w1.slice(1..);
       let s1: Src<[u8]> = w1.upgrade().unwrap();
       assert_eq!(&*s1, &[2, 3]);
-      let w2: WeakSrc<[u8]> = w1.clone_slice(..1);
+      let w2: WeakSrc<[u8]> = w1.slice(..1);
       let s2: Src<[u8]> = w2.upgrade().unwrap();
       assert_eq!(&*s2, &[2]);
       assert!(w1.same_root(&w2));
@@ -691,10 +580,10 @@ mod tests {
       let w1: WeakSrc<[u8]> = Src::downgrade(&s1);
       let s1: Src<[u8]> = w1.upgrade().unwrap();
       assert_eq!(&*s1, &[1, 2, 3]);
-      let w2: WeakSrc<u8> = w1.clone_slice(2);
+      let w2: WeakSrc<u8> = w1.slice(2);
       let s2: Src<u8> = w2.upgrade().unwrap();
       assert_eq!(&*s2, &3);
-      let w2: WeakSrc<[u8]> = WeakSrc::as_slice(w2);
+      let w2: WeakSrc<[u8]> = w2.as_slice();
       let s2: Src<[u8]> = w2.upgrade().unwrap();
       assert_eq!(&*s2, &[3]);
       assert!(w1.same_root(&w2));
@@ -704,63 +593,13 @@ mod tests {
       let w1: WeakSrc<[u8]> = Src::downgrade(&s1);
       let s1: Src<[u8]> = w1.upgrade().unwrap();
       assert_eq!(&*s1, &[1, 2, 3]);
-      let w1: WeakSrc<[u8]> = w1.into_slice(1..);
+      let w1: WeakSrc<[u8]> = w1.slice(1..);
       let s1: Src<[u8]> = w1.upgrade().unwrap();
       assert_eq!(&*s1, &[2, 3]);
-      let w2: WeakSrc<u8> = w1.clone_slice(0);
+      let w2: WeakSrc<u8> = w1.slice(0);
       let s2: Src<u8> = w2.upgrade().unwrap();
       assert_eq!(&*s2, &2);
-      let w2: WeakSrc<[u8]> = WeakSrc::as_slice(w2);
-      let s2: Src<[u8]> = w2.upgrade().unwrap();
-      assert_eq!(&*s2, &[2]);
-      assert!(w1.same_root(&w2));
-    }
-  }
-  
-  #[test]
-  fn upgrade_slice() {
-    { // dangling
-      let w: WeakSrc<[u8]> = WeakSrc::dangling();
-      assert!(w.upgrade_slice(..).is_none());
-    }
-    { // slice
-      let s1: Src<[u8]> = Src::from_array([1, 2, 3]);
-      let w1: WeakSrc<[u8]> = Src::downgrade(&s1);
-      let s1: Src<[u8]> = w1.upgrade().unwrap();
-      assert_eq!(&*s1, &[1, 2, 3]);
-      let w1: WeakSrc<[u8]> = w1.into_slice(1..);
-      let s1: Src<[u8]> = w1.upgrade().unwrap();
-      assert_eq!(&*s1, &[2, 3]);
-      let s2: Src<[u8]> = w1.upgrade_slice(..1).unwrap();
-      let w2: WeakSrc<[u8]> = Src::downgrade(&s2);
-      assert_eq!(&*s2, &[2]);
-      assert!(w1.same_root(&w2));
-    }
-    { // item 1
-      let s1: Src<[u8]> = Src::from_array([1, 2, 3]);
-      let w1: WeakSrc<[u8]> = Src::downgrade(&s1);
-      let s1: Src<[u8]> = w1.upgrade().unwrap();
-      assert_eq!(&*s1, &[1, 2, 3]);
-      let s2: Src<u8> = w1.upgrade_slice(2).unwrap();
-      let w2: WeakSrc<u8> = Src::downgrade(&s2);
-      assert_eq!(&*s2, &3);
-      let w2: WeakSrc<[u8]> = WeakSrc::as_slice(w2);
-      let s2: Src<[u8]> = w2.upgrade().unwrap();
-      assert_eq!(&*s2, &[3]);
-      assert!(w1.same_root(&w2));
-    }
-    { // item 2
-      let s1: Src<[u8]> = Src::from_array([1, 2, 3]);
-      let w1: WeakSrc<[u8]> = Src::downgrade(&s1);
-      let s1: Src<[u8]> = w1.upgrade().unwrap();
-      assert_eq!(&*s1, &[1, 2, 3]);
-      let w1: WeakSrc<[u8]> = w1.into_slice(1..);
-      let s1: Src<[u8]> = w1.upgrade().unwrap();
-      assert_eq!(&*s1, &[2, 3]);
-      let s2: Src<u8> = w1.upgrade_slice(0).unwrap();
-      let w2: WeakSrc<u8> = Src::downgrade(&s2);
-      assert_eq!(&*s2, &2);
-      let w2: WeakSrc<[u8]> = WeakSrc::as_slice(w2);
+      let w2: WeakSrc<[u8]> = w2.as_slice();
       let s2: Src<[u8]> = w2.upgrade().unwrap();
       assert_eq!(&*s2, &[2]);
       assert!(w1.same_root(&w2));
@@ -777,66 +616,17 @@ mod tests {
     { // single root
       let s1: Src<u8> = Src::single(42);
       let w1: WeakSrc<u8> = Src::downgrade(&s1);
-      let w2: WeakSrc<[u8]> = w1.clone().as_slice();
+      let w2: WeakSrc<[u8]> = w1.as_slice();
       let s2: Src<[u8]> = w2.upgrade().unwrap();
       assert_eq!([*s1], *s2);
     }
     { // from slice
       let s1: Src<[u8]> = Src::from_array([1, 2, 3]);
       let w1: WeakSrc<[u8]> = Src::downgrade(&s1);
-      let w2: WeakSrc<u8> = w1.clone_slice(1);
+      let w2: WeakSrc<u8> = w1.slice(1);
       let s2: Src<u8> = w2.upgrade().unwrap();
-      let w3: WeakSrc<[u8]> = w2.clone().as_slice();
+      let w3: WeakSrc<[u8]> = w2.as_slice();
       let s3: Src<[u8]> = w3.upgrade().unwrap();
-      assert_eq!(s1[1], *s2);
-      assert_eq!([*s2], *s3);
-    }
-  }
-  
-  #[test]
-  fn clone_as_slice() {
-    { // dangling
-      let w: WeakSrc<u8> = WeakSrc::dangling();
-      let w: WeakSrc<[u8]> = w.clone_as_slice();
-      assert!(w.is_dangling());
-    }
-    { // single root
-      let s1: Src<u8> = Src::single(42);
-      let w1: WeakSrc<u8> = Src::downgrade(&s1);
-      let w2: WeakSrc<[u8]> = w1.clone_as_slice();
-      let s2: Src<[u8]> = w2.upgrade().unwrap();
-      assert_eq!([*s1], *s2);
-    }
-    { // from slice
-      let s1: Src<[u8]> = Src::from_array([1, 2, 3]);
-      let w1: WeakSrc<[u8]> = Src::downgrade(&s1);
-      let w2: WeakSrc<u8> = w1.clone_slice(1);
-      let s2: Src<u8> = w2.upgrade().unwrap();
-      let w3: WeakSrc<[u8]> = w2.clone_as_slice();
-      let s3: Src<[u8]> = w3.upgrade().unwrap();
-      assert_eq!(s1[1], *s2);
-      assert_eq!([*s2], *s3);
-    }
-  }
-  
-  #[test]
-  fn upgrade_as_slice() {
-    { // dangling
-      let w: WeakSrc<u8> = WeakSrc::dangling();
-      assert!(w.upgrade_as_slice().is_none());
-    }
-    { // single root
-      let s1: Src<u8> = Src::single(42);
-      let w1: WeakSrc<u8> = Src::downgrade(&s1);
-      let s2: Src<[u8]> = w1.upgrade_as_slice().unwrap();
-      assert_eq!([*s1], *s2);
-    }
-    { // from slice
-      let s1: Src<[u8]> = Src::from_array([1, 2, 3]);
-      let w1: WeakSrc<[u8]> = Src::downgrade(&s1);
-      let w2: WeakSrc<u8> = w1.clone_slice(1);
-      let s2: Src<u8> = w2.upgrade().unwrap();
-      let s3: Src<[u8]> = w2.upgrade_as_slice().unwrap();
       assert_eq!(s1[1], *s2);
       assert_eq!([*s2], *s3);
     }

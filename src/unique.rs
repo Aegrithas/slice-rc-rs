@@ -1,6 +1,6 @@
 use std::{borrow::{Borrow, BorrowMut}, cmp::Ordering, fmt::{self, Debug, Formatter, Pointer}, hash::{Hash, Hasher}, marker::PhantomData, mem::{forget, MaybeUninit}, ops::{Deref, DerefMut, Index, IndexMut}, ptr::NonNull, str::Utf8Error};
 
-use crate::{inner::{AllocUninit, AllocZeroed}, InnerHeader, Src, SrcIndex, SrcSlice, SrcTarget, UninitSrc, WeakSrc};
+use crate::{inner::{AllocUninit, AllocZeroed}, InnerHeader, Src, SrcSlice, SrcTarget, UninitSrc, WeakSrc};
 
 pub struct UniqueSrc<T: SrcTarget + ?Sized> {
   
@@ -75,11 +75,6 @@ impl<T: SrcSlice + ?Sized> UniqueSrc<T> {
     self.len == 0
   }
   
-  #[inline]
-  pub fn downgrade_slice<I: SrcIndex<T>>(&self, index: I) -> WeakSrc<I::Output> {
-    UniqueSrc::downgrade(&self).into_slice(index)
-  }
-  
 }
 
 impl<T> UniqueSrc<T> {
@@ -136,11 +131,6 @@ impl<T> UniqueSrc<T> {
     };
     forget(this);
     this2
-  }
-  
-  #[inline]
-  pub fn downgrade_as_slice(this: &UniqueSrc<T>) -> WeakSrc<[T]> {
-    UniqueSrc::downgrade(this).as_slice()
   }
   
 }
@@ -588,41 +578,12 @@ mod tests {
     assert!(!u.is_empty());
   }
   
-  // TODO: I now realize that, given the current behavior of Weak::into_slice, UninitSrc::downgrade_slice will always panic;
-  //       that said, there is at least one larger item on my todo list that will resolve this problem,
-  //       so for now I'm just marking this test as #[should_panic] and moving on
-  #[test]
-  #[should_panic]
-  fn downgrade_slice() {
-    { // slice
-      let u: UniqueSrc<[u8]> = UniqueSrc::from_array([1, 2, 3]);
-      let w: WeakSrc<[u8]> = u.downgrade_slice(1..);
-      assert!(w.upgrade().is_none());
-      let s1: Src<[u8]> = UniqueSrc::into_shared(u);
-      let s2: Src<[u8]> = w.upgrade().unwrap();
-      assert_eq!(s1[1..], *s2);
-      assert_eq!(*s2, [2, 3]);
-      assert!(Src::same_root(&s1, &s2));
-    }
-    { // item
-      let u: UniqueSrc<[u8]> = UniqueSrc::from_array([1, 2, 3]);
-      let w: WeakSrc<u8> = u.downgrade_slice(1);
-      assert!(w.upgrade().is_none());
-      let s1: Src<[u8]> = UniqueSrc::into_shared(u);
-      let s2: Src<u8> = w.upgrade().unwrap();
-      assert_eq!(s1[1], *s2);
-      assert_eq!(*s2, 2);
-      let s2: Src<[u8]> = Src::as_slice(s2);
-      assert!(Src::same_root(&s1, &s2));
-    }
-  }
-  
   #[test]
   fn single() {
     let u: UniqueSrc<u8> = UniqueSrc::single(42);
     let s: Src<u8> = UniqueSrc::into_shared(u);
     assert!(Src::is_root(&s));
-    let s: Src<[u8]> = Src::as_slice(s);
+    let s: Src<[u8]> = Src::as_slice(&s);
     assert_eq!(s.len(), 1);
   }
   
@@ -648,15 +609,6 @@ mod tests {
     let u: UniqueSrc<u8> = UniqueSrc::single(42);
     let u: UniqueSrc<[u8]> = UniqueSrc::as_slice(u);
     assert_eq!([42], *u);
-  }
-  
-  #[test]
-  fn downgrade_as_slice() {
-    let u: UniqueSrc<u8> = UniqueSrc::single(42);
-    let w: WeakSrc<[u8]> = UniqueSrc::downgrade_as_slice(&u);
-    let s1: Src<u8> = UniqueSrc::into_shared(u);
-    let s2: Src<[u8]> = w.upgrade().unwrap();
-    assert_eq!([*s1], *s2);
   }
   
   #[test]
