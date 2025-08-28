@@ -6,6 +6,32 @@ const fn non_null_max<T>() -> NonNull<T> {
   NonNull::without_provenance(NonZero::<usize>::MAX)
 }
 
+/// `WeakSrc` is a version of [`Src`] that holds a non-owning reference to the managed allocation.
+/// 
+/// This is this crate's analog to [`std::rc::Weak`]; see the [crate-level documentation] for a description of how this crate's types differ from those of [`std::rc`].
+/// 
+/// The allocation is accessed by calling [`upgrade`](WeakSrc::upgrade) on the `WeakSrc` pointer, which returns an <code>[Option]<[Src]\<T>></code>.
+/// 
+/// Since a `WeakSrc` pointer does not count toward ownership, it will not prevent the value stored in the allocation from being dropped,
+/// and `WeakSrc` itself makes no guarantees about the value still being present. Thus it may return `None` when `upgrade`d.
+/// Note however that a `WeakSrc` *does* prevent the allocation itself (the backing store) from being deallocated.
+/// 
+/// A `WeakSrc` pointer is useful for keeping a temporary reference to the allocation managed by `Src` without preventing its inner value from being dropped.
+/// It is also used to prevent circular references between `Src` pointers, since mutual owning references would never allow either `Src` to be dropped.
+/// For example, a tree could have strong `Src` pointers from parent nodes to children, and `WeakSrc` pointers from children back to their parents.
+/// 
+/// The typical way to obtain a `WeakSrc` pointer is to call [`Src::downgrade`].
+/// 
+/// # Dangling
+/// 
+/// [`WeakSrc::dangling`] allows constructing a "dangling" `WeakSrc` pointer;
+/// dangling `WeakSrc` pointers don't have a backing allocation, and as such, are guaranteed to return [`None`] from [`WeakSrc::upgrade`].
+/// Dangling `WeakSrc`s are considered [root](crate#root) and [empty](WeakSrc::is_empty).
+/// 
+/// `WeakSrc` pointers which are attached to an allocation are not considered dangling,
+/// even if that allocation has been dropped or the `WeakSrc` is otherwise un-[upgrade](WeakSrc::upgrade)able.
+/// 
+/// [crate-level documentation]: crate#how-do-this-crates-types-differ-from-the-stdrc-ones
 pub struct WeakSrc<T: SrcTarget + ?Sized> {
   
   // SAFETY:
@@ -42,6 +68,17 @@ impl<T: SrcTarget + ?Sized> WeakSrc<T> {
     unsafe { InnerHeader::get_header(self.header) }
   }
   
+  /// Constructs a new [dangling](WeakSrc#dangling) `WeakSrc`.
+  /// 
+  /// # Examples
+  /// 
+  /// ```rust
+  /// use slice_rc::WeakSrc;
+  /// 
+  /// let dangling = WeakSrc::<i32>::dangling();
+  /// 
+  /// assert!(dangling.is_dangling());
+  /// ```
   #[inline]
   pub fn dangling() -> WeakSrc<T> {
     WeakSrc {
@@ -52,11 +89,60 @@ impl<T: SrcTarget + ?Sized> WeakSrc<T> {
     }
   }
   
+  /// Returns `true` if this `WeakSrc` is [dangling](WeakSrc#dangling).
+  /// This only returns `true` for `WeakSrc`s that were constructed from [`WeakSrc::dangling`];
+  /// `WeakSrc`s that are un-[upgrade](WeakSrc::upgrade)able for other reasons are not considered dangling,
+  /// and therefore this method returns `false` for those cases.
+  /// 
+  /// # Examples
+  /// 
+  /// ```rust
+  /// use slice_rc::WeakSrc;
+  /// 
+  /// let dangling = WeakSrc::<i32>::dangling();
+  /// 
+  /// assert!(dangling.is_dangling());
+  /// ```
+  /// 
+  /// Not dangling:
+  /// 
+  /// ```rust
+  /// # use slice_rc::Src;
+  /// let s = Src::single(42);
+  /// let w = Src::downgrade(&s);
+  /// drop(s);
+  /// 
+  /// assert!(!w.is_dangling());
+  /// assert!(w.upgrade().is_none());
+  /// ```
   #[inline]
   pub fn is_dangling(&self) -> bool {
     self.header == non_null_max()
   }
   
+  /// Attempts to upgrade the `WeakSrc` pointer to an [`Src`], delaying dropping the inner value if successful.
+  /// 
+  /// Returns [`None`] if the inner value has since been dropped,
+  /// if the inner value is uniquely owned by a [`UniqueSrc`](crate::UniqueSrc),
+  /// or if the inner value is uninitialized via [`UninitSrc`](crate::UninitSrc) or one of the cyclic helper methods, e.g. [`Src::cyclic_from_fn`].
+  /// 
+  /// # Examples
+  /// 
+  /// ```rust
+  /// use slice_rc::Src;
+  /// 
+  /// let five = Src::single(5);
+  /// 
+  /// let weak_five = Src::downgrade(&five);
+  /// 
+  /// let strong_five = weak_five.upgrade();
+  /// assert!(strong_five.is_some());
+  /// 
+  /// drop(strong_five);
+  /// drop(five);
+  /// 
+  /// assert!(weak_five.upgrade().is_none());
+  /// ```
   pub fn upgrade(&self) -> Option<Src<T>> {
     if self.is_dangling() {
       return None
@@ -78,16 +164,124 @@ impl<T: SrcTarget + ?Sized> WeakSrc<T> {
     })
   }
   
+  /// Returns `true` if the two `WeakSrc`s point to slices starting at the same location in memory or are both [dangling](WeakSrc#dangling), akin to [`ptr::eq`](std::ptr::eq).
+  /// 
+  /// ```rust
+  /// use slice_rc::{Src, WeakSrc};
+  /// 
+  /// let slice = Src::from_array([1, 2, 3]);
+  /// let weak_slice = Src::downgrade(&slice);
+  /// let same_weak_slice = weak_slice.clone();
+  /// let weak_sub_slice = weak_slice.slice(1..);
+  /// let other_slice = Src::from_array([1, 2, 3]);
+  /// let other_weak_slice = Src::downgrade(&other_slice);
+  /// 
+  /// assert!(WeakSrc::ptr_eq(&weak_slice, &same_weak_slice));
+  /// assert!(!WeakSrc::ptr_eq(&weak_slice, &weak_sub_slice));
+  /// assert!(!WeakSrc::ptr_eq(&weak_slice, &other_weak_slice));
+  /// ```
+  /// 
+  /// If `WeakSrc::ptr_eq(&a, &b)` returns true, then <code>WeakSrc::[same_root](WeakSrc::same_root)(&a, &b)</code> will also be true.
+  /// 
+  /// The type parameter, `U`, is to allow `WeakSrc`s of different types that _could_ be of the same allocation, and therefore, _could_ be equal by pointer, to be compared, e.g.:
+  /// ```rust
+  /// # use slice_rc::{Src, WeakSrc};
+  /// let strong: Src<i32> = Src::single(4);
+  /// let single: WeakSrc<i32> = Src::downgrade(&strong);
+  /// let slice: WeakSrc<[i32]> = single.as_slice();
+  /// 
+  /// assert!(WeakSrc::ptr_eq(&single, &slice));
+  /// ```
+  /// 
+  /// Note that this method currently ignores the length of the slice:
+  /// ```rust
+  /// # use slice_rc::{Src, WeakSrc};
+  /// let root_strong = Src::from_array([1, 2, 3]);
+  /// let root = Src::downgrade(&root_strong);
+  /// let first = root.slice(0);
+  /// 
+  /// assert!(WeakSrc::ptr_eq(&root, &first));
+  /// 
+  /// let mid_to_end_slice = root.slice(1..);
+  /// let mid_slice = root.slice(1..=1);
+  /// 
+  /// assert!(WeakSrc::ptr_eq(&mid_to_end_slice, &mid_slice));
+  /// ```
+  /// It is undecided whether this behavior is desireable, and as such, it may change;
+  /// notably, [`Weak::ptr_eq`](std::rc::Weak::ptr_eq) does ignore metadata for `?Sized` types
+  /// (though that's irrelevant for slices because [`Weak`]s can only point to the whole slice, and therefore the length will always be the same for [`Weak`]s that point to the same allocation),
+  /// while [`ptr::eq`](std::ptr::eq) does consider the metadata (which causes inconsistent results for trait objects, but that is irrelevant here because `WeakSrc`s don't support trait objects).
+  /// 
+  /// See also [`WeakSrc::same_root`].
+  /// 
+  /// [`Weak`]: std::rc::Weak
   #[inline]
   pub fn ptr_eq<U: SrcTarget<Item = T::Item> + ?Sized>(&self, other: &WeakSrc<U>) -> bool {
     self.start == other.start
   }
   
+  /// Returns `true` if the two `WeakSrc`s share the same [root](crate#root) (i.e., they point to parts of the same allocation) or are both [dangling](WeakSrc#dangling).
+  /// 
+  /// ```rust
+  /// use slice_rc::{Src, WeakSrc};
+  /// 
+  /// let slice = Src::from_array([1, 2, 3]);
+  /// let weak_slice = Src::downgrade(&slice);
+  /// let same_weak_slice = weak_slice.clone();
+  /// let other_slice = Src::from_array([1, 2, 3]);
+  /// let other_weak_slice = Src::downgrade(&other_slice);
+  /// 
+  /// assert!(WeakSrc::same_root(&weak_slice, &same_weak_slice));
+  /// assert!(!WeakSrc::same_root(&weak_slice, &other_weak_slice));
+  /// ```
+  /// 
+  /// Notably, neither slice has to be the root, nor do they need to overlap at all:
+  /// ```rust
+  /// # use slice_rc::{Src, WeakSrc};
+  /// let strong = Src::from_array([1, 2, 3]);
+  /// let root = Src::downgrade(&strong);
+  /// let a = root.slice(..1);
+  /// let b = root.slice(2..);
+  /// 
+  /// assert!(WeakSrc::same_root(&a, &b));
+  /// ```
+  /// 
+  /// The type parameter, `U`, is to allow `WeakSrc`s of different types that _could_ share the same root, to be compared, e.g.:
+  /// ```rust
+  /// # use slice_rc::{Src, WeakSrc};
+  /// let strong: Src<i32> = Src::single(4);
+  /// let single: WeakSrc<i32> = Src::downgrade(&strong);
+  /// let slice: WeakSrc<[i32]> = single.as_slice();
+  /// 
+  /// assert!(WeakSrc::same_root(&single, &slice));
+  /// ```
+  /// 
+  /// This method ignores the length of the slices in question, but unlike [`WeakSrc::ptr_eq`], this will not change,
+  /// as the roots remains the same regardless of which parts of it are included in these slices.
+  /// 
+  /// See also [`WeakSrc::ptr_eq`], [`WeakSrc::is_root`], and [`WeakSrc::root`].
   #[inline]
   pub fn same_root<U: SrcTarget<Item = T::Item> + ?Sized>(&self, other: &WeakSrc<U>) -> bool {
     self.header == other.header
   }
   
+  /// Returns `true` if this `WeakSrc` contains its [root](crate#root) (i.e., it references its entire allocation), or is [dangling](WeakSrc#dangling).
+  /// Notably, this `WeakSrc` does not have to be the first one that was initialized, it just has to cover the entire allocation.
+  /// 
+  /// ```rust
+  /// use slice_rc::Src;
+  /// 
+  /// let strong = Src::from_array([1, 2, 3]);
+  /// let root = Src::downgrade(&strong);
+  /// let also_root = root.slice(..);
+  /// let slice = root.slice(1..);
+  /// 
+  /// assert!(root.is_root());
+  /// assert!(also_root.is_root());
+  /// assert!(!slice.is_root());
+  /// ```
+  /// 
+  /// See also [`WeakSrc::same_root`] and [`WeakSrc::root`].
   #[inline]
   pub fn is_root(&self) -> bool {
     if self.is_dangling() {
@@ -102,6 +296,9 @@ impl<T: SrcTarget + ?Sized> WeakSrc<T> {
     self.start == root_start && T::len_as_usize(self.len) == header.len()
   }
   
+  /// Gets the number of strong ([`Src`]) pointers pointing to this allocation.
+  /// 
+  /// If `self` is [dangling](WeakSrc#dangling), this will return `0`.
   pub fn strong_count(&self) -> usize {
     if !self.is_dangling() {
       // SAFETY: we just checked that this weak is not dangling
@@ -111,6 +308,9 @@ impl<T: SrcTarget + ?Sized> WeakSrc<T> {
     }
   }
   
+  /// Gets the number of `WeakSrc` pointers pointing to this allocation.
+  /// 
+  /// If no strong pointers remain (or this `WeakSrc` is otherwise un-[upgrade](WeakSrc::upgrade)able), this will return `0`.
   pub fn weak_count(&self) -> usize {
     if !self.is_dangling() {
       // SAFETY: we just checked that this weak is not dangling
@@ -125,6 +325,45 @@ impl<T: SrcTarget + ?Sized> WeakSrc<T> {
     }
   }
   
+  /// Returns a `WeakSrc` pointer that refers to this `WeakSrc`'s [root](crate#root) (i.e., the entire allocation).
+  /// ```rust
+  /// use slice_rc::Src;
+  /// 
+  /// let strong = Src::from_array([1, 2, 3]);
+  /// let root = Src::downgrade(&strong);
+  /// let slice = root.slice(1..);
+  /// drop(root);
+  /// 
+  /// assert_eq!(*slice.upgrade().unwrap(), [2, 3]);
+  /// 
+  /// let new_root = slice.root();
+  /// 
+  /// assert_eq!(*new_root.upgrade().unwrap(), [1, 2, 3]);
+  /// ```
+  /// 
+  /// This method returns a <code>[WeakSrc]\<\[T::[Item](crate::SrcTarget::Item)]></code> rather than a <code>[WeakSrc]\<T></code> for two reasons:
+  /// * If <code>T: [Sized]</code>, then the root can only be a <code>[WeakSrc]\<T></code> if its total length is is `1`, which would prevent situations like this:
+  /// ```rust
+  /// # use slice_rc::{Src, WeakSrc};
+  /// let strong = Src::from_array([1, 2, 3]);
+  /// let root: WeakSrc<[i32]> = Src::downgrade(&strong);
+  /// let slice: WeakSrc<i32> = root.slice(1);
+  /// let new_root: WeakSrc<[i32]> = slice.root();
+  /// 
+  /// assert_eq!(*new_root.upgrade().unwrap(), [1, 2, 3]);
+  /// ```
+  /// * If <code>T = [str]</code>, it could be a UTF-8 slice of a larger allocation that is not entirely UTF-8, which would violate the safety invariant of [`str`]:
+  /// ```rust
+  /// # use slice_rc::{Src, WeakSrc};
+  /// let root: Src<[u8]> = Src::copied(b"\xFFhello");
+  /// let weak_root: WeakSrc<[u8]> = Src::downgrade(&root);
+  /// let s: Src<str> = Src::from_utf8(root.slice(1..)).unwrap();
+  /// let weak_s: WeakSrc<str> = Src::downgrade(&s);
+  /// let new_weak_root: WeakSrc<[u8]> = weak_s.root();
+  /// 
+  /// assert_eq!(&*weak_s.upgrade().unwrap(), "hello");
+  /// assert!(Src::from_utf8(new_weak_root.upgrade().unwrap()).is_err());
+  /// ```
   pub fn root(&self) -> WeakSrc<[T::Item]> {
     if self.is_dangling() {
       return WeakSrc::dangling()
@@ -151,16 +390,67 @@ impl<T: SrcTarget + ?Sized> WeakSrc<T> {
 
 impl<T: SrcSlice + ?Sized> WeakSrc<T> {
   
+  /// Returns the numeber of elements in this `WeakSrc`. If `self` is [dangling](WeakSrc#dangling), returns `0`.
+  /// 
+  /// This method only returns the length of the whole allocation if `self` is a [root](crate#root) `WeakSrc`.
+  /// 
+  /// ```rust
+  /// use slice_rc::Src;
+  /// 
+  /// let s = Src::from_array([1, 2, 3]);
+  /// let w = Src::downgrade(&s);
+  /// assert_eq!(w.len(), 3);
+  /// ```
   #[inline]
   pub fn len(&self) -> usize {
     self.len
   }
   
+  /// Returns `true` if this `WeakSrc` has a length of `0` or is [dangling](WeakSrc#dangling).
+  /// 
+  /// ```rust
+  /// use slice_rc::Src;
+  /// 
+  /// let a_strong = Src::from_array([1, 2, 3]);
+  /// let a = Src::downgrade(&a_strong);
+  /// assert!(!a.is_empty());
+  /// 
+  /// let b_strong = Src::<[i32]>::from_array([]);
+  /// let b = Src::downgrade(&b_strong);
+  /// assert!(b.is_empty());
+  /// ```
   #[inline]
   pub fn is_empty(&self) -> bool {
     self.len == 0
   }
   
+  /// Returns a `WeakSrc` pointer to an element or subslice depending on the type of index.
+  /// * If given a position (only applicable where `Self = WeakSrc<[U]>`), returns an `WeakSrc<U>` to the element at that position.
+  /// * If given a range, returns the subslice corresponding to that range.
+  /// 
+  /// # Panics
+  /// If the index is in some way out of bounds, or if <code>Self = WeakSrc\<[str]></code> and the indices are not at [char boundaries](str::is_char_boundary).
+  /// 
+  /// Also panics if `self` is un-[upgrade](WeakSrc::upgrade)able;
+  /// this is problematic for [`UniqueSrc`](crate::UniqueSrc) and [`UninitSrc`](crate::UninitSrc), and is intended to be relaxed in the future.
+  /// 
+  /// # Examples
+  /// ```rust
+  /// use slice_rc::Src;
+  /// 
+  /// let v = Src::from_array([10, 40, 30]);
+  /// let weak = Src::downgrade(&v);
+  /// assert_eq!(Src::single(40), weak.slice(1).upgrade().unwrap());
+  /// assert_eq!(Src::from_array([10, 40]), weak.slice(0..2).upgrade().unwrap());
+  /// ```
+  /// Panics:
+  /// ```should_panic
+  /// # use slice_rc::Src;
+  /// let v = Src::from_array([10, 40, 30]);
+  /// let weak = Src::downgrade(&v);
+  /// let _ = weak.slice(3);
+  /// let _ = weak.slice(0..4);
+  /// ```
   #[inline]
   pub fn slice<I: SrcIndex<T>>(&self, index: I) -> WeakSrc<I::Output> {
     index.get_weak(self.clone())
@@ -232,8 +522,22 @@ impl<T: SrcSlice + ?Sized> WeakSrc<T> {
   
 }
 
-impl<T> WeakSrc<T> {
+impl<T: Sized> WeakSrc<T> {
   
+  /// Returns a `WeakSrc` equivalent to this one, but typed as a slice rather than a single element.
+  /// The returned slice will have a length of `1`, and its element `0` will be at the same location in memory as `self`'s value.
+  /// 
+  /// ```rust
+  /// use slice_rc::{Src, WeakSrc};
+  /// use std::ptr;
+  /// 
+  /// let strong = Src::single(42);
+  /// let single = Src::downgrade(&strong);
+  /// let slice = single.as_slice();
+  /// 
+  /// assert!(WeakSrc::ptr_eq(&single, &slice));
+  /// assert!(ptr::eq(&*single.upgrade().unwrap(), &slice.upgrade().unwrap()[0]));
+  /// ```
   #[inline]
   pub fn as_slice(&self) -> WeakSrc<[T]> {
     if !self.is_dangling() {

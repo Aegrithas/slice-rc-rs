@@ -1,3 +1,59 @@
+#![warn(missing_docs)]
+
+//! `slice-rc` provides a variant of the `std`'s [`Rc`](std::rc::Rc) type, and more generally the contents of the module [`std::rc`].
+//! 
+//! If you are not familiar with those, you should read their documentation before trying to use this crate.
+//! 
+//! * [`Src<T>`] (which, as the crate name suggests, stands for 'Slice Reference Counted') is a variant of [`std::rc::Rc<T>`]
+//! * [`WeakSrc<T>`] is a variant of [`std::rc::Weak<T>`]
+//! * [`UniqueSrc<T>`] is a variant of the currently-unstable [`std::rc::UniqueRc<T>`]
+//! * [`UninitSrc<T>`] is a variant of the as-yet-only-hypothetical `std::rc::UninitRc<T>`
+//! 
+//! ### How do this crate's types differ from the [`std::rc`] ones?
+//! 
+//! Notably, <code>[Rc](std::rc::Rc)\<[\[T\]](prim@slice)></code> is already a valid, usable type; why do we need a special slice [`Rc`](std::rc::Rc) when [`Rc`](std::rc::Rc) already supports slices?
+//! 
+//! The answer can be found in one method (well, two: one on [`Src`](Src::slice), and its analog on [`WeakSrc`](WeakSrc::slice)):
+//! [`Src::slice`] allows us to acquire a sub-slice of the contents of the [`Src`] which still uses the reference-counting mechanism rather than using lifetime-style references;
+//! e.g.:
+//! 
+//! ```rust
+//! use slice_rc::Src;
+//! 
+//! let whole: Src<str> = Src::new("Hello World!");
+//! let world: Src<str> = whole.slice(6..=10);
+//! assert_eq!(&*world, "World");
+//! ```
+//! 
+//! This is useful because:
+//! * <code>[Src]\<T>: \'static where T: \'static</code>, and therefore this is useful where lifetimes are difficult or impossible to accomodate.
+//! * Via [`WeakSrc`] and constructor functions like [`Src::cyclic_from_fn`], it allows constructing collections of self-referential objects,
+//!   and unlike e.g. <code>[Vec]\<[Rc](std::rc::Rc)\<T>></code>, in a <code>[Src]\<[\[T\]](prim@slice)></code>, the actual `T`'s are contiguous, which makes it possible to obtain a [`&[T]`](prim@slice).
+//! 
+//! ### Root
+//! 
+//! Many methods in this crate refer to a "root" pointer (e.g., root `Src`).
+//! This refers to any `Src`-family pointer that refers to the whole allocation;
+//! its [`len`](Src::len) is the number of elements in the whole allocation,
+//! and every non-root pointer to the allocation references either an element or a subslice of if.
+//! 
+//! Note that it is not just the "original" `Src` that can be root:
+//! 
+//! ```rust
+//! # use slice_rc::Src;
+//! let root = Src::from_array([1, 2, 3]);
+//! 
+//! assert!(Src::is_root(&root));
+//! 
+//! let slice = root.slice(1..);
+//! 
+//! assert!(!Src::is_root(&slice));
+//! 
+//! let also_root = Src::root(&slice);
+//! 
+//! assert!(Src::is_root(&also_root));
+//! ```
+
 mod inner;
 mod strong;
 mod uninit;
@@ -12,12 +68,17 @@ pub use uninit::*;
 pub use unique::*;
 pub use weak::*;
 
+/// A helper trait for [`Src::slice`] and [`WeakSrc::slice`].
+/// Analagous to [`SliceIndex`](std::slice::SliceIndex).
 pub trait SrcIndex<T: SrcSlice + ?Sized> {
   
+  /// The output type returned by methods.
   type Output: SrcTarget + ?Sized;
   
+  /// Returns an [`Src`] pointer to the output at this location, panicking if out of bounds.
   fn get(self, slice: Src<T>) -> Src<Self::Output>;
   
+  /// Returns a [`WeakSrc`] pointer to the output at this location, panicking if out of bounds.
   fn get_weak(self, slice: WeakSrc<T>) -> WeakSrc<Self::Output>;
   
 }
@@ -290,9 +351,17 @@ impl SrcIndex<str> for RangeToInclusive<usize> {
   
 }
 
+/// A sealed trait to encode types that can can be used in the `Src`-family of pointers.
+/// 
+/// Either <code>Self: [Sized]</code> or <code>Self: [SrcSlice]</code>.
 pub trait SrcTarget: private::SealedSrcTarget {
   
-  type Item;
+  /// The type of each element of a <code>[Src]\<Self></code>.
+  /// * Where <code>Self: [Sized]</code>: `Self::Item = Self`
+  /// * Where <code>Self = [\[T\]](prim@slice)</code>: `Self::Item = T`
+  /// * Where <code>Self = [str]</code>: <code>Self::Item = [u8]</code>
+  ///   (because a [`str`] is just a [`[u8]`](prim@slice) which must be UTF-8)
+  type Item: Sized;
   
 }
 
@@ -433,6 +502,9 @@ impl private::SealedSrcTarget for str {
   
 }
 
+/// A sealed trait to encode the subset of [`SrcTarget`] that can contain multiple elements.
+/// 
+/// Either <code>Self = [\[T\]](prim@slice)</code> or <code>Self = [str]</code>.
 pub trait SrcSlice: SrcTarget + private::SealedSrcSlice {}
 
 impl<T> SrcSlice for [T] {}
