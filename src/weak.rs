@@ -1,6 +1,6 @@
 use std::{fmt::{self, Debug, Formatter, Pointer}, marker::PhantomData, mem::forget, num::NonZero, ops::Bound, ptr::NonNull};
 
-use crate::{inner::InnerHeader, Src, SrcIndex, SrcSlice, SrcTarget};
+use crate::{inner::InnerHeader, Src, SrcSlice, SrcTarget, WeakSrcIndex};
 
 const fn non_null_max<T>() -> NonNull<T> {
   NonNull::without_provenance(NonZero::<usize>::MAX)
@@ -424,102 +424,6 @@ impl<T: SrcSlice + ?Sized> WeakSrc<T> {
     self.len == 0
   }
   
-  /// Returns a `WeakSrc` pointer to an element or subslice depending on the type of index.
-  /// * If given a position (only applicable where `Self = WeakSrc<[U]>`), returns an `WeakSrc<U>` to the element at that position.
-  /// * If given a range, returns the subslice corresponding to that range.
-  /// 
-  /// # Panics
-  /// If the index is in some way out of bounds, or if <code>Self = WeakSrc\<[str]></code> and the indices are not at [char boundaries](str::is_char_boundary).
-  /// 
-  /// Also panics if `self` is un-[upgrade](WeakSrc::upgrade)able;
-  /// this is problematic for [`UniqueSrc`](crate::UniqueSrc) and [`UninitSrc`](crate::UninitSrc), and is intended to be relaxed in the future.
-  /// 
-  /// # Examples
-  /// ```rust
-  /// use slice_rc::Src;
-  /// 
-  /// let v = Src::from_array([10, 40, 30]);
-  /// let weak = Src::downgrade(&v);
-  /// assert_eq!(Src::single(40), weak.slice(1).upgrade().unwrap());
-  /// assert_eq!(Src::from_array([10, 40]), weak.slice(0..2).upgrade().unwrap());
-  /// ```
-  /// Panics:
-  /// ```should_panic
-  /// # use slice_rc::Src;
-  /// let v = Src::from_array([10, 40, 30]);
-  /// let weak = Src::downgrade(&v);
-  /// let _ = weak.slice(3);
-  /// let _ = weak.slice(0..4);
-  /// ```
-  #[inline]
-  pub fn slice<I: SrcIndex<T>>(&self, index: I) -> WeakSrc<I::Output> {
-    index.get_weak(self.clone())
-  }
-  
-  pub(crate) fn into_item(self, index: usize) -> WeakSrc<T::Item> {
-    assert!(!self.is_dangling(), "cannot slice a dangling WeakSrc");
-    // SAFETY: we just checked that this weak is not dangling
-    let header = unsafe { self.header() };
-    assert!(index < header.len(), "index {index} out of range for slice of length {}", header.len());
-    // SAFETY: the safety invariant of self.start implies this safety requirement, given the assertion that index <= header.len() and that this weak is not dangling
-    let start_ptr = unsafe { self.start.add(index) };
-    let this = WeakSrc {
-      // SAFETY: the safety invariant of self.header is the same as this.header
-      header: self.header,
-      // SAFETY: if this weak is not dangling (which we checked earlier), the start_ptr that we just calculated earlier meets the safety invariant by definition
-      start: start_ptr,
-      // SAFETY: if this weak is not dangling (which we checked earlier), the safety invariant is checked by the assertion above
-      len: (),
-      _phantom: PhantomData,
-    };
-    forget(self); // don't modify the weak count because this is logically the same WeakSrc
-    this
-  }
-  
-  pub(crate) fn into_slice_from_bounds(self, start: Bound<usize>, end: Bound<usize>) -> WeakSrc<T> {
-    assert!(!self.is_dangling(), "cannot slice a dangling WeakSrc");
-    // SAFETY: we just checked that this weak is not dangling
-    let header = unsafe { self.header() };
-    assert!(header.strong_count() > 0, "cannot slice a WeakSrc whose strong references have been dropped");
-    let start_inc = match start {
-      Bound::Excluded(val) => val + 1,
-      Bound::Included(val) => val,
-      Bound::Unbounded => 0,
-    };
-    let end_exc = match end {
-      Bound::Excluded(val) => val,
-      Bound::Included(val) => val + 1,
-      Bound::Unbounded => header.len(),
-    };
-    assert!(start_inc <= end_exc, "slice index starts at {start_inc} but ends at {end_exc}");
-    assert!(end_exc <= header.len(), "range end index {end_exc} out of range for slice of length {}", header.len());
-    // SAFETY: we just checked that this weak is not dangling and not dropped
-    unsafe { T::validate_range_weak(&self, start_inc..end_exc) };
-    let len = end_exc - start_inc;
-    // SAFETY: the safety invariant of self.start implies this safety requirement, given the assertion that start_inc <= header.len() and that this weak is not dangling
-    let start_ptr = unsafe { self.start.add(start_inc) };
-    let this = WeakSrc {
-      // SAFETY: the safety invariant of self.header is the same as this.header
-      header: self.header,
-      // SAFETY: if this weak is not dangling (which we checked earlier), the start_ptr that we just calculated earlier meets the safety invariant by definition
-      start: start_ptr,
-      // SAFETY: if this weak is not dangling (which we checked earlier), the safety invariant is checked by the assertions above
-      len,
-      _phantom: PhantomData,
-    };
-    forget(self); // don't modify the weak count because this is logically the same WeakSrc
-    this
-  }
-  
-  // SAFETY:
-  // requires:
-  // * self is not dangling nor dropped
-  pub(crate) unsafe fn get_slice(&self) -> &[T::Item] {
-    let s = NonNull::slice_from_raw_parts(self.start, self.len);
-    // SAFETY: the safety requirements of this fn combined with the invariants of WeakSrc guarantee that this refers to a properly initialized slice
-    unsafe { s.as_ref() }
-  }
-  
 }
 
 impl<T: Sized> WeakSrc<T> {
@@ -553,6 +457,106 @@ impl<T: Sized> WeakSrc<T> {
       len: 1,
       _phantom: PhantomData,
     }
+  }
+  
+}
+
+impl<T> WeakSrc<[T]> {
+  
+  /// Returns a `WeakSrc` pointer to an element or subslice depending on the type of index.
+  /// * If given a position (only applicable where `Self = WeakSrc<[U]>`), returns an `WeakSrc<U>` to the element at that position.
+  /// * If given a range, returns the subslice corresponding to that range.
+  /// 
+  /// This method is only provided for <code>WeakSrc\<[\[T\]](prim@slice)></code>, not <code>WeakSrc\<[str]></code>;
+  /// this is because [`str`] requires analyzing the value to validate that the new range is falls on [char boundaries](str::is_char_boundary),
+  /// and therefore the `WeakStr` must be [`upgrade`](WeakSrc::upgrade)d to slice it.
+  /// On the other hand, this is an acceptable compromise because the primary use-case of this method is during cyclic initialization,
+  /// which is meaningless for [`str`].
+  /// 
+  /// # Panics
+  /// If the index is in some way out of bounds.
+  /// Note that [dangling](WeakSrc#dangling) pointers are considered [empty](WeakSrc::is_empty).
+  /// 
+  /// # Examples
+  /// ```rust
+  /// use slice_rc::Src;
+  /// 
+  /// let v = Src::from_array([10, 40, 30]);
+  /// let weak = Src::downgrade(&v);
+  /// assert_eq!(Src::single(40), weak.slice(1).upgrade().unwrap());
+  /// assert_eq!(Src::from_array([10, 40]), weak.slice(0..2).upgrade().unwrap());
+  /// ```
+  /// Panics:
+  /// ```should_panic
+  /// # use slice_rc::Src;
+  /// let v = Src::from_array([10, 40, 30]);
+  /// let weak = Src::downgrade(&v);
+  /// let _ = weak.slice(3);
+  /// let _ = weak.slice(0..4);
+  /// ```
+  #[inline]
+  pub fn slice<I: WeakSrcIndex<[T]>>(&self, index: I) -> WeakSrc<I::Output> {
+    index.get_weak(self.clone())
+  }
+  
+  pub(crate) fn into_item(self, index: usize) -> WeakSrc<T> {
+    let len = if self.is_dangling() {
+      0
+    } else {
+      // SAFETY: we just checked that this weak is not dangling
+      let header = unsafe { self.header() };
+      header.len()
+    };
+    assert!(index < len, "index {index} out of range for slice of length {}", len);
+    // SAFETY: the safety invariant of self.start implies this safety requirement, given the assertion that index <= header.len() and that this weak is not dangling
+    let start_ptr = unsafe { self.start.add(index) };
+    let this = WeakSrc {
+      // SAFETY: the safety invariant of self.header is the same as this.header
+      header: self.header,
+      // SAFETY: if this weak is not dangling (which we checked earlier), the start_ptr that we just calculated earlier meets the safety invariant by definition
+      start: start_ptr,
+      // SAFETY: if this weak is not dangling (which we checked earlier), the safety invariant is checked by the assertion above
+      len: (),
+      _phantom: PhantomData,
+    };
+    forget(self); // don't modify the weak count because this is logically the same WeakSrc
+    this
+  }
+  
+  pub(crate) fn into_slice_from_bounds(self, start: Bound<usize>, end: Bound<usize>) -> WeakSrc<[T]> {
+    let len = if self.is_dangling() {
+      0
+    } else {
+      // SAFETY: we just checked that this weak is not dangling
+      let header = unsafe { self.header() };
+      header.len()
+    };
+    let start_inc = match start {
+      Bound::Excluded(val) => val + 1,
+      Bound::Included(val) => val,
+      Bound::Unbounded => 0,
+    };
+    let end_exc = match end {
+      Bound::Excluded(val) => val,
+      Bound::Included(val) => val + 1,
+      Bound::Unbounded => len,
+    };
+    assert!(start_inc <= end_exc, "slice index starts at {start_inc} but ends at {end_exc}");
+    assert!(end_exc <= len, "range end index {end_exc} out of range for slice of length {}", len);
+    let len = end_exc - start_inc;
+    // SAFETY: the safety invariant of self.start implies this safety requirement, given the assertion that start_inc <= header.len() and that this weak is not dangling
+    let start_ptr = unsafe { self.start.add(start_inc) };
+    let this = WeakSrc {
+      // SAFETY: the safety invariant of self.header is the same as this.header
+      header: self.header,
+      // SAFETY: if this weak is not dangling (which we checked earlier), the start_ptr that we just calculated earlier meets the safety invariant by definition
+      start: start_ptr,
+      // SAFETY: if this weak is not dangling (which we checked earlier), the safety invariant is checked by the assertions above
+      len,
+      _phantom: PhantomData,
+    };
+    forget(self); // don't modify the weak count because this is logically the same WeakSrc
+    this
   }
   
 }
@@ -858,14 +862,12 @@ mod tests {
   }
   
   #[test]
-  #[should_panic]
-  fn slice_dangling() {
-    let w: WeakSrc<[u8]> = WeakSrc::dangling();
-    let _: WeakSrc<[u8]> = w.slice(..);
-  }
-  
-  #[test]
   fn slice() {
+    { // dangling
+      let w1: WeakSrc<[u8]> = WeakSrc::dangling();
+      let w2: WeakSrc<[u8]> = w1.slice(..);
+      assert!(WeakSrc::ptr_eq(&w1, &w2));
+    }
     { // slice
       let s1: Src<[u8]> = Src::from_array([1, 2, 3]);
       let w1: WeakSrc<[u8]> = Src::downgrade(&s1);

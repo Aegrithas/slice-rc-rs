@@ -68,7 +68,7 @@ pub use uninit::*;
 pub use unique::*;
 pub use weak::*;
 
-/// A helper trait for [`Src::slice`] and [`WeakSrc::slice`].
+/// A helper trait for [`Src::slice`].
 /// Analagous to [`SliceIndex`](std::slice::SliceIndex).
 pub trait SrcIndex<T: SrcSlice + ?Sized> {
   
@@ -77,9 +77,6 @@ pub trait SrcIndex<T: SrcSlice + ?Sized> {
   
   /// Returns an [`Src`] pointer to the output at this location, panicking if out of bounds.
   fn get(self, slice: Src<T>) -> Src<Self::Output>;
-  
-  /// Returns a [`WeakSrc`] pointer to the output at this location, panicking if out of bounds.
-  fn get_weak(self, slice: WeakSrc<T>) -> WeakSrc<Self::Output>;
   
 }
 
@@ -90,11 +87,6 @@ impl<T> SrcIndex<[T]> for usize {
   #[inline]
   fn get(self, slice: Src<[T]>) -> Src<Self::Output> {
     Src::into_item(slice, self)
-  }
-  
-  #[inline]
-  fn get_weak(self, slice: WeakSrc<[T]>) -> WeakSrc<Self::Output> {
-    WeakSrc::into_item(slice, self)
   }
   
 }
@@ -109,12 +101,6 @@ impl<T> SrcIndex<[T]> for (Bound<usize>, Bound<usize>) {
     Src::into_slice_from_bounds(slice, start, end)
   }
   
-  #[inline]
-  fn get_weak(self, slice: WeakSrc<[T]>) -> WeakSrc<Self::Output> {
-    let (start, end) = self;
-    WeakSrc::into_slice_from_bounds(slice, start, end)
-  }
-  
 }
 
 impl<T> SrcIndex<[T]> for Range<usize> {
@@ -125,12 +111,6 @@ impl<T> SrcIndex<[T]> for Range<usize> {
   fn get(self, slice: Src<[T]>) -> Src<Self::Output> {
     let Range { start, end } = self;
     Src::into_slice_from_bounds(slice, Bound::Included(start), Bound::Excluded(end))
-  }
-  
-  #[inline]
-  fn get_weak(self, slice: WeakSrc<[T]>) -> WeakSrc<Self::Output> {
-    let Range { start, end } = self;
-    WeakSrc::into_slice_from_bounds(slice, Bound::Included(start), Bound::Excluded(end))
   }
   
 }
@@ -145,12 +125,6 @@ impl<T> SrcIndex<[T]> for RangeFrom<usize> {
     Src::into_slice_from_bounds(slice, Bound::Included(start), Bound::Unbounded)
   }
   
-  #[inline]
-  fn get_weak(self, slice: WeakSrc<[T]>) -> WeakSrc<Self::Output> {
-    let RangeFrom { start } = self;
-    WeakSrc::into_slice_from_bounds(slice, Bound::Included(start), Bound::Unbounded)
-  }
-  
 }
 
 impl<T> SrcIndex<[T]> for RangeFull {
@@ -161,12 +135,6 @@ impl<T> SrcIndex<[T]> for RangeFull {
   fn get(self, slice: Src<[T]>) -> Src<Self::Output> {
     let RangeFull = self;
     Src::into_slice_from_bounds(slice, Bound::Unbounded, Bound::Unbounded)
-  }
-  
-  #[inline]
-  fn get_weak(self, slice: WeakSrc<[T]>) -> WeakSrc<Self::Output> {
-    let RangeFull = self;
-    WeakSrc::into_slice_from_bounds(slice, Bound::Unbounded, Bound::Unbounded)
   }
   
 }
@@ -181,12 +149,6 @@ impl<T> SrcIndex<[T]> for RangeInclusive<usize> {
     Src::into_slice_from_bounds(slice, Bound::Included(start), Bound::Included(end))
   }
   
-  #[inline]
-  fn get_weak(self, slice: WeakSrc<[T]>) -> WeakSrc<Self::Output> {
-    let (start, end) = self.into_inner();
-    WeakSrc::into_slice_from_bounds(slice, Bound::Included(start), Bound::Included(end))
-  }
-  
 }
 
 impl<T> SrcIndex<[T]> for RangeTo<usize> {
@@ -197,12 +159,6 @@ impl<T> SrcIndex<[T]> for RangeTo<usize> {
   fn get(self, slice: Src<[T]>) -> Src<Self::Output> {
     let RangeTo { end } = self;
     Src::into_slice_from_bounds(slice, Bound::Unbounded, Bound::Excluded(end))
-  }
-  
-  #[inline]
-  fn get_weak(self, slice: WeakSrc<[T]>) -> WeakSrc<Self::Output> {
-    let RangeTo { end } = self;
-    WeakSrc::into_slice_from_bounds(slice, Bound::Unbounded, Bound::Excluded(end))
   }
   
 }
@@ -217,12 +173,6 @@ impl<T> SrcIndex<[T]> for RangeToInclusive<usize> {
     Src::into_slice_from_bounds(slice, Bound::Unbounded, Bound::Included(end))
   }
   
-  #[inline]
-  fn get_weak(self, slice: WeakSrc<[T]>) -> WeakSrc<Self::Output> {
-    let RangeToInclusive { end } = self;
-    WeakSrc::into_slice_from_bounds(slice, Bound::Unbounded, Bound::Included(end))
-  }
-  
 }
 
 impl SrcIndex<str> for (Bound<usize>, Bound<usize>) {
@@ -233,12 +183,6 @@ impl SrcIndex<str> for (Bound<usize>, Bound<usize>) {
   fn get(self, slice: Src<str>) -> Src<Self::Output> {
     let (start, end) = self;
     Src::into_slice_from_bounds(slice, start, end)
-  }
-  
-  #[inline]
-  fn get_weak(self, slice: WeakSrc<str>) -> WeakSrc<Self::Output> {
-    let (start, end) = self;
-    WeakSrc::into_slice_from_bounds(slice, start, end)
   }
   
 }
@@ -253,12 +197,6 @@ impl SrcIndex<str> for Range<usize> {
     Src::into_slice_from_bounds(slice, Bound::Included(start), Bound::Excluded(end))
   }
   
-  #[inline]
-  fn get_weak(self, slice: WeakSrc<str>) -> WeakSrc<Self::Output> {
-    let Range { start, end } = self;
-    WeakSrc::into_slice_from_bounds(slice, Bound::Included(start), Bound::Excluded(end))
-  }
-  
 }
 
 impl SrcIndex<str> for RangeFrom<usize> {
@@ -269,12 +207,6 @@ impl SrcIndex<str> for RangeFrom<usize> {
   fn get(self, slice: Src<str>) -> Src<Self::Output> {
     let RangeFrom { start } = self;
     Src::into_slice_from_bounds(slice, Bound::Included(start), Bound::Unbounded)
-  }
-  
-  #[inline]
-  fn get_weak(self, slice: WeakSrc<str>) -> WeakSrc<Self::Output> {
-    let RangeFrom { start } = self;
-    WeakSrc::into_slice_from_bounds(slice, Bound::Included(start), Bound::Unbounded)
   }
   
 }
@@ -289,12 +221,6 @@ impl SrcIndex<str> for RangeFull {
     Src::into_slice_from_bounds(slice, Bound::Unbounded, Bound::Unbounded)
   }
   
-  #[inline]
-  fn get_weak(self, slice: WeakSrc<str>) -> WeakSrc<Self::Output> {
-    let RangeFull = self;
-    WeakSrc::into_slice_from_bounds(slice, Bound::Unbounded, Bound::Unbounded)
-  }
-  
 }
 
 impl SrcIndex<str> for RangeInclusive<usize> {
@@ -305,12 +231,6 @@ impl SrcIndex<str> for RangeInclusive<usize> {
   fn get(self, slice: Src<str>) -> Src<Self::Output> {
     let (start, end) = self.into_inner();
     Src::into_slice_from_bounds(slice, Bound::Included(start), Bound::Included(end))
-  }
-  
-  #[inline]
-  fn get_weak(self, slice: WeakSrc<str>) -> WeakSrc<Self::Output> {
-    let (start, end) = self.into_inner();
-    WeakSrc::into_slice_from_bounds(slice, Bound::Included(start), Bound::Included(end))
   }
   
 }
@@ -325,12 +245,6 @@ impl SrcIndex<str> for RangeTo<usize> {
     Src::into_slice_from_bounds(slice, Bound::Unbounded, Bound::Excluded(end))
   }
   
-  #[inline]
-  fn get_weak(self, slice: WeakSrc<str>) -> WeakSrc<Self::Output> {
-    let RangeTo { end } = self;
-    WeakSrc::into_slice_from_bounds(slice, Bound::Unbounded, Bound::Excluded(end))
-  }
-  
 }
 
 impl SrcIndex<str> for RangeToInclusive<usize> {
@@ -343,8 +257,89 @@ impl SrcIndex<str> for RangeToInclusive<usize> {
     Src::into_slice_from_bounds(slice, Bound::Unbounded, Bound::Included(end))
   }
   
+}
+
+/// A helper trait for [`WeakSrc::slice`].
+pub trait WeakSrcIndex<T: SrcSlice + ?Sized>: SrcIndex<T> {
+  
+  /// Returns a [`WeakSrc`] pointer to the output at this location, panicking if out of bounds.
+  fn get_weak(self, slice: WeakSrc<T>) -> WeakSrc<Self::Output>;
+  
+}
+
+impl<T> WeakSrcIndex<[T]> for usize {
+  
   #[inline]
-  fn get_weak(self, slice: WeakSrc<str>) -> WeakSrc<Self::Output> {
+  fn get_weak(self, slice: WeakSrc<[T]>) -> WeakSrc<Self::Output> {
+    WeakSrc::into_item(slice, self)
+  }
+  
+}
+
+impl<T> WeakSrcIndex<[T]> for (Bound<usize>, Bound<usize>) {
+  
+  #[inline]
+  fn get_weak(self, slice: WeakSrc<[T]>) -> WeakSrc<Self::Output> {
+    let (start, end) = self;
+    WeakSrc::into_slice_from_bounds(slice, start, end)
+  }
+  
+}
+
+impl<T> WeakSrcIndex<[T]> for Range<usize> {
+  
+  #[inline]
+  fn get_weak(self, slice: WeakSrc<[T]>) -> WeakSrc<Self::Output> {
+    let Range { start, end } = self;
+    WeakSrc::into_slice_from_bounds(slice, Bound::Included(start), Bound::Excluded(end))
+  }
+  
+}
+
+impl<T> WeakSrcIndex<[T]> for RangeFrom<usize> {
+  
+  #[inline]
+  fn get_weak(self, slice: WeakSrc<[T]>) -> WeakSrc<Self::Output> {
+    let RangeFrom { start } = self;
+    WeakSrc::into_slice_from_bounds(slice, Bound::Included(start), Bound::Unbounded)
+  }
+  
+}
+
+impl<T> WeakSrcIndex<[T]> for RangeFull {
+  
+  #[inline]
+  fn get_weak(self, slice: WeakSrc<[T]>) -> WeakSrc<Self::Output> {
+    let RangeFull = self;
+    WeakSrc::into_slice_from_bounds(slice, Bound::Unbounded, Bound::Unbounded)
+  }
+  
+}
+
+impl<T> WeakSrcIndex<[T]> for RangeInclusive<usize> {
+  
+  #[inline]
+  fn get_weak(self, slice: WeakSrc<[T]>) -> WeakSrc<Self::Output> {
+    let (start, end) = self.into_inner();
+    WeakSrc::into_slice_from_bounds(slice, Bound::Included(start), Bound::Included(end))
+  }
+  
+}
+
+impl<T> WeakSrcIndex<[T]> for RangeTo<usize> {
+  
+  #[inline]
+  fn get_weak(self, slice: WeakSrc<[T]>) -> WeakSrc<Self::Output> {
+    let RangeTo { end } = self;
+    WeakSrc::into_slice_from_bounds(slice, Bound::Unbounded, Bound::Excluded(end))
+  }
+  
+}
+
+impl<T> WeakSrcIndex<[T]> for RangeToInclusive<usize> {
+  
+  #[inline]
+  fn get_weak(self, slice: WeakSrc<[T]>) -> WeakSrc<Self::Output> {
     let RangeToInclusive { end } = self;
     WeakSrc::into_slice_from_bounds(slice, Bound::Unbounded, Bound::Included(end))
   }
@@ -514,9 +509,6 @@ impl<T> private::SealedSrcSlice for [T] {
   #[inline]
   fn validate_range(_this: &Src<Self>, _range: Range<usize>) {}
   
-  #[inline]
-  unsafe fn validate_range_weak(_this: &WeakSrc<Self>, _range: Range<usize>) {}
-  
 }
 
 impl SrcSlice for str {}
@@ -526,18 +518,6 @@ impl private::SealedSrcSlice for str {
   fn validate_range(this: &Src<Self>, range: Range<usize>) {
     let s: &str = &**this;
     let _ = s[range]; // construct the slice just to trigger the appropriate errors if these indices are not at char boundaries
-  }
-  
-  // SAFETY:
-  // requires:
-  // * that this is not dangling nor dropped
-  unsafe fn validate_range_weak(this: &crate::WeakSrc<Self>, range: Range<usize>) where Self: crate::SrcSlice {
-    // SAFETY:
-    // * safety requirements passed onto the caller
-    let s: &[u8] = unsafe { this.get_slice() };
-    // SAFETY: all constructor fns of WeakSrc<str> guarantee the contents are UTF-8
-    let s: &str = unsafe { str::from_utf8_unchecked(s) };
-    let _ = s[range];
   }
   
 }
@@ -565,11 +545,6 @@ mod private {
   pub trait SealedSrcSlice: SealedSrcTarget<Len = usize> {
     
     fn validate_range(this: &super::Src<Self>, range: Range<usize>) where Self: super::SrcSlice;
-    
-    // SAFETY:
-    // requires:
-    // * that this is not dangling nor dropped
-    unsafe fn validate_range_weak(this: &super::WeakSrc<Self>, range: Range<usize>) where Self: super::SrcSlice;
     
   }
   

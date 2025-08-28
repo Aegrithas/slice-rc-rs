@@ -462,9 +462,24 @@ impl<T> UniqueSrc<[T]> {
   /// assert!(root.iter().all(|s| Src::ptr_eq(&root, &s.root.upgrade().unwrap())));
   /// ```
   /// 
-  /// Note: it should be possible to obtain a weak to just the current element that is being constructed via `weak.slice(i)`,
-  /// but currently a [`WeakSrc`] cannot be sliced while it is non-upgradeable (as it is in this case).
-  /// This is a known issue that will be fixed in the future.
+  /// It is possible to obtain a `WeakSrc` to the individual element that is being initialized via [`WeakSrc::slice`]:
+  /// 
+  /// ```rust
+  /// # use slice_rc::{Src, UniqueSrc, WeakSrc};
+  /// struct S {
+  ///   val: usize,
+  ///   me: WeakSrc<S>,
+  /// }
+  /// 
+  /// let root = UniqueSrc::cyclic_from_fn(5, |root, i| S {
+  ///   val: i * 2,
+  ///   me: root.slice(i),
+  /// });
+  /// 
+  /// let root = UniqueSrc::into_shared(root);
+  /// 
+  /// assert!(root.iter().enumerate().all(|(i, s)| Src::ptr_eq(&root.slice(i), &s.me.upgrade().unwrap())));
+  /// ```
   pub fn cyclic_from_fn<F: FnMut(&WeakSrc<[T]>, usize) -> T>(len: usize, mut f: F) -> UniqueSrc<[T]> {
     let this = UninitSrc::new(len);
     let weak = this.downgrade();
