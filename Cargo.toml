@@ -8,5 +8,6 @@ readme = "README.md"
 license-file = "LICENSE.txt"
 keywords = ["rc", "slice", "slices"]
 categories = ["data-structures", "memory-management"]
+repository = "https://github.com/Aegrithas/slice-rc-rs"
 
 [dependencies]
