@@ -5,6 +5,7 @@ edition = "2024"
 rust-version = "1.89.0"
 description = "A variety of reference-counted with better support for slices than std::rc::Rc"
 readme = "README.md"
+license-file = "LICENSE.txt"
 keywords = ["rc", "slice", "slices"]
 categories = ["data-structures", "memory-management"]
 
