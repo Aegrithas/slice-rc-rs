@@ -1,6 +1,6 @@
 [package]
 name = "slice-rc"
-version = "0.2.0"
+version = "0.2.1"
 edition = "2024"
 rust-version = "1.89.0"
 description = "A variety of reference-counted pointers with better support for slices than std::rc::Rc"
@@ -9,5 +9,6 @@ license-file = "LICENSE.txt"
 keywords = ["rc", "slice", "slices"]
 categories = ["data-structures", "memory-management"]
 repository = "https://github.com/Aegrithas/slice-rc-rs"
+documentation = "https://docs.rs/slice-rc"
 
 [dependencies]

@@ -14,4 +14,4 @@ fn main() {
 }
 ```
 
-See the documentation at [https://docs.rs/slice-rc/] for more elaborate examples.
+See the documentation at [https://docs.rs/slice-rc/](https://docs.rs/slice_rc) for more elaborate examples.
